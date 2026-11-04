@@ -195,11 +195,12 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
       const fit = clip.fill === 'cover'
         ? `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`
         : `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`
-      let video = `[${input}:v:0]trim=start=${number(trimStart)}:duration=${number(trimDuration)},setpts=PTS-STARTPTS,fps=${fps},${fit},setsar=1`
-      const rotation = (Number(asset.rotation || 0) + Number(clip.rotation || 0)) % 360
+      let video = `[${input}:v:0]trim=start=${number(trimStart)}:duration=${number(trimDuration)},setpts=PTS-STARTPTS+${number(start)}/TB,fps=${fps}`
+      const rotation = ((Number(clip.rotation || 0) % 360) + 360) % 360
       if (rotation === 90) video += ',transpose=clock'
       else if (rotation === 180) video += ',hflip,vflip'
       else if (rotation === 270) video += ',transpose=cclock'
+      video += `,${fit},setsar=1`
       video += `[${segment}]`
       filters.push(video)
       const endTime = start + clipDuration
@@ -208,7 +209,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
       const scale = Math.max(0.25, Math.min(3, Number(clip.scale ?? 1)))
       const opacity = Math.max(0, Math.min(1, Number(clip.opacity ?? 1)))
       const hasSeparateAudioClip = clips.some((candidate) => candidate.linkedClipId === clip.id)
-      const hasAudio = Boolean(asset.audioCodec && !hasSeparateAudioClip && clip.audioLinked !== false && Number(clip.volume ?? 0.82) > 0)
+      const hasAudio = Boolean(asset.audioCodec && !clip.suppressEmbeddedAudio && !hasSeparateAudioClip && clip.audioLinked !== false && Number(clip.volume ?? 0.82) > 0)
       if (scale !== 1 || opacity !== 1) {
         // Applying canvas effects to individual layers preserves overlap and cross-track stacking.
         const scaleOutput = `vstyled${index}`
@@ -223,7 +224,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
       if (hasAudio) {
         const audioLabel = `dialogue${index}`
         const gain = Math.max(0, Math.min(3, Number(clip.volume ?? 0.82)))
-        filters.push(`[${input}:a:0]atrim=start=${number(trimStart)}:duration=${number(trimDuration)},asetpts=PTS-STARTPTS+${number(start)}/TB,volume=${gain}[${audioLabel}]`)
+        filters.push(`[${input}:a:0]atrim=start=${number(trimStart)}:duration=${number(trimDuration)},asetpts=PTS-STARTPTS,adelay=${Math.round(start * 1000)}:all=1,volume=${gain}[${audioLabel}]`)
         videoAudioLabels.push({ label: audioLabel, voice: true, start, end: endTime })
       }
     } else if (clip.kind === 'graphics' || trackMap.get(clip.trackId)?.type === 'graphics') {
@@ -256,33 +257,52 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
     const effectiveDuration = Math.max(0.001, Math.min(Number(clip.duration), Math.max(0.001, duration - start)))
     const volume = Math.max(0, Math.min(3, Number(clip.volume ?? 0.82)))
     const label = `customAudio${audioLabels.length}`
-    let filter = `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS+${number(start)}/TB,volume=${volume}`
+    let filter = `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS,volume=${volume}`
     const fadeIn = Math.max(0, Number(clip.fadeIn || 0))
     const fadeOut = Math.max(0, Number(clip.fadeOut || 0))
     if (fadeIn && effectiveDuration > fadeIn) filter += `,afade=t=in:st=0:d=${number(fadeIn)}`
     if (fadeOut && effectiveDuration > fadeOut) filter += `,afade=t=out:st=${number(effectiveDuration - fadeOut)}:d=${number(fadeOut)}`
+    filter += `,adelay=${Math.round(start * 1000)}:all=1`
     filters.push(`[${input}:a:0]${filter}[${label}]`)
     audioLabels.push(`[${label}]`)
     dialogueLabels.push(`[${label}]`)
   })
 
-  const voiceMix = dialogueLabels.length > 1 ? 'allVoices' : null
-  if (voiceMix) filters.push(`${dialogueLabels.join('')}amix=inputs=${dialogueLabels.length}:duration=longest:normalize=0[${voiceMix}]`)
+  const duckingMusic = normalizedAudio.filter(({ clip }) => clip.isMusic && clip.autoDuck !== false && dialogueLabels.length)
+  const sidechainLabels = new Map()
+  if (dialogueLabels.length) {
+    let voices = dialogueLabels[0]
+    if (dialogueLabels.length > 1) {
+      filters.push(`${dialogueLabels.join('')}amix=inputs=${dialogueLabels.length}:duration=longest:normalize=0[allVoices]`)
+      voices = '[allVoices]'
+    }
+    if (duckingMusic.length) {
+      const outputs = ['[voiceMain]', ...duckingMusic.map(({ clip }, index) => {
+        const label = `[voiceSidechain${index}]`
+        sidechainLabels.set(clip.id, label)
+        return label
+      })]
+      filters.push(`${voices}asplit=${outputs.length}${outputs.join('')}`)
+      voices = '[voiceMain]'
+    }
+    audioLabels.splice(0, audioLabels.length, voices)
+  }
   normalizedAudio.filter(({ clip }) => clip.isMusic).forEach(({ clip, input }) => {
     const start = Math.max(0, Number(clip.start))
     const trimStart = Math.max(0, Number(clip.trimStart || 0))
     const effectiveDuration = Math.max(0.001, Math.min(Number(clip.duration), Math.max(0.001, duration - start)))
     const volume = Math.max(0, Math.min(3, Number(clip.volume ?? (clip.isMusic ? 0.22 : 0.82))))
     const audio = `customAudio${audioLabels.length}`
-    let filter = `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS+${number(start)}/TB,volume=${volume}`
+    let filter = `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS,volume=${volume}`
     const fadeIn = Math.max(0, Number(clip.fadeIn || 0))
     const fadeOut = Math.max(0, Number(clip.fadeOut || 0))
     if (fadeIn && effectiveDuration > fadeIn) filter += `,afade=t=in:st=0:d=${number(fadeIn)}`
     if (fadeOut && effectiveDuration > fadeOut) filter += `,afade=t=out:st=${number(effectiveDuration - fadeOut)}:d=${number(fadeOut)}`
+    filter += `,adelay=${Math.round(start * 1000)}:all=1`
     if (clip.autoDuck !== false && dialogueLabels.length) {
       const sidechainInput = `sidechainInput${audioLabels.length}`
       const ducked = `ducked${audioLabels.length}`
-      const sidechainSource = voiceMix ? `[${voiceMix}]` : dialogueLabels[0]
+      const sidechainSource = sidechainLabels.get(clip.id)
       filters.push(`[${input}:a:0]${filter}[${sidechainInput}]`)
       filters.push(`[${sidechainInput}]${sidechainSource}sidechaincompress=threshold=0.035:ratio=6:attack=20:release=300:makeup=1[${ducked}]`)
       audioLabels.push(`[${ducked}]`)
@@ -292,7 +312,11 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
     audioLabels.push(`[${audio}]`)
   })
 
-  if (audioLabels.length > 1) filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,alimiter=limit=0.94[mixedAudio]`)
+  if (audioLabels.length > 1) filters.push(`${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,alimiter=limit=0.94,apad,atrim=duration=${number(duration)}[mixedAudio]`)
+  else if (audioLabels.length === 1) {
+    filters.push(`${audioLabels[0]}apad,atrim=duration=${number(duration)}[finalAudio]`)
+    audioLabels[0] = '[finalAudio]'
+  }
 
   args.push('-filter_complex', filters.join(';'), '-map', `[${videoLabel}]`)
   if (audioLabels.length > 1) args.push('-map', '[mixedAudio]')

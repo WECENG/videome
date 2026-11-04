@@ -21,6 +21,10 @@ import {
 } from './domain.js'
 
 describe('subtitle and timeline helpers', () => {
+  it('never expands intentional batch slices into full-length import placeholders', () => {
+    const clips = [{ id: 'batch-video', assetId: 'asset', kind: 'video', batchMixClip: true, trimStart: 6, trimEnd: 9, duration: 3, sourceDuration: 40 }]
+    expect(repairPlaceholderDurationClips(clips, 'asset', 40)).toBe(clips)
+  })
   it('round-trips SRT cues with millisecond timestamps and multiline text', () => {
     const cues = [{ id: 'one', start: 1.234, end: 3.5, text: '第一行\n第二行', edited: true }]
     expect(parseSrt(createSrt(cues)).map(({ start, end, text }) => ({ start, end, text }))).toEqual(cues.map(({ start, end, text }) => ({ start, end, text })))

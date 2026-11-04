@@ -100,6 +100,7 @@ import {
   unlinkClipPair,
 } from './domain.js'
 import './styles.css'
+import BatchMixPanel from './BatchMixPanel.jsx'
 
 const FALLBACK_TOOLS = [
   { name: 'ffmpeg', path: null, version: null },
@@ -170,6 +171,7 @@ function App() {
   const [relinkQueue, setRelinkQueue] = useState([])
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [showExport, setShowExport] = useState(false)
+  const [showBatchMix, setShowBatchMix] = useState(false)
   const [musicFiles, setMusicFiles] = useState(defaultMusic)
   const [recordingMusic, setRecordingMusic] = useState(null)
   const [previewSeeking, setPreviewSeeking] = useState(false)
@@ -2107,6 +2109,7 @@ function App() {
         <div className="topbar-brand"><div className="brand-mark"><Clapperboard size={16} strokeWidth={2.1} /><i /></div><span>videome<span className="brand-atelier"> atelier</span></span></div>
         <div className="breadcrumb"><button className="crumb-root" onClick={openProject}><FolderOpen size={13} />项目<span>/</span></button><label className="project-title-input"><input ref={projectNameInputRef} value={project.name} aria-label="项目名称" onChange={(event) => { const name = event.target.value; projectRef.current = { ...projectRef.current, name }; updateProject({ name }) }} onBlur={(event) => updateProjectName(event.target.value)} /><ChevronDown size={11} /></label><span className="project-unsaved">{saving ? '保存中…' : savedAt ? `已保存 ${timeAgo(savedAt)}` : '自动保存'}</span></div>
         <div className="topbar-actions"><span className="cloud-status"><CloudOff size={12} /><span>本地项目</span></span><button className="icon-button undo-button" aria-label="撤销" title="撤销 · ⌘Z" disabled={!editHistory.length} onClick={handleUndo}><Undo2 size={16} /></button><button className="icon-button undo-button" aria-label="重做" title="重做 · ⌘⇧Z" disabled={!editFuture.length} onClick={handleRedo}><Redo2 size={16} /></button><span className="topbar-divider" /><button className="topbar-save" onClick={saveProject}><span>保存</span><kbd>⌘ S</kbd></button><button className="export-button" onClick={() => setShowExport(true)}><Download size={14} /><span>导出成片</span><ChevronDown size={13} /></button></div>
+        <button className="batch-launch" onClick={() => setShowBatchMix(true)}><Scissors size={14} />批量混剪</button>
       </header>
     )
   }
@@ -2179,7 +2182,7 @@ function App() {
         && project.playhead >= clip.start && project.playhead < clip.start + clip.duration
     })
     const linkedAudioTrack = linkedSourceAudio && project.tracks.find((track) => track.id === linkedSourceAudio.trackId)
-    const videoAudioMuted = Boolean(linkedSourceAudio && (linkedSourceAudio.muted || linkedAudioTrack?.muted || Number(linkedSourceAudio.volume ?? 0.82) <= 0))
+    const videoAudioMuted = Boolean((dominantClip?.suppressEmbeddedAudio && !linkedSourceAudio) || linkedSourceAudio && (linkedSourceAudio.muted || linkedAudioTrack?.muted || Number(linkedSourceAudio.volume ?? 0.82) <= 0))
     const hasSeparateSameSourceAudio = false
     const currentCaption = selectedSubtitle?.text || null
 
@@ -2421,6 +2424,7 @@ function App() {
       {renderFooter()}
       {message && <div className={`toast toast-${messageKind}`} role="status"><span className="toast-mark">{messageKind === 'error' ? <Info size={14} /> : messageKind === 'info' ? <Sparkles size={14} /> : <CheckCircle2 size={14} />}</span><span>{message}</span><button aria-label="关闭通知" onClick={() => setMessage('')}><X size={14} /></button></div>}
       {renderExportDialog()}
+      {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}
       {renderSubtitleBusy()}

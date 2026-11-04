@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, protocol } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs/promises')
@@ -8,6 +8,8 @@ const { fileURLToPath } = require('node:url')
 const { buildExportArguments, classifyAsset } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
 const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectFileName, withProjectExtension, writeProjectSnapshot } = require('./project.cjs')
+const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
+const { registerBatchMixIpc } = require('./batch/ipc.cjs')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
 const projectFilter = [{ name: 'Videome 工程', extensions: ['videome'] }]
@@ -17,6 +19,20 @@ const previewWindows = new Set()
 const thumbnailRoots = new Set()
 const previewProxyJobs = new Map()
 const queueProjectWrite = createProjectWriteQueue()
+const exportGate = new ResourceGate()
+const backgroundLane = new BackgroundLane(exportGate)
+const batchManager = app.whenReady().then(async () => {
+  const [ffmpeg, ffprobe] = await Promise.all([locateBinary('ffmpeg'), locateBinary('ffprobe')])
+  const service = new BatchMixManager({ root: path.join(app.getPath('userData'), 'batch-mix'), ffmpeg, ffprobe, gate: exportGate })
+  await service.initialized
+  service.on('progress', (job) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('videome:batch-progress', job)
+    }
+  })
+  return service
+})
+registerBatchMixIpc({ ipcMain, app, dialog, shell, manager: batchManager, authorize: authorizeExistingMedia, openProjectPath })
 let pendingProjectPath = process.argv.find((argument) => argument.toLowerCase().endsWith('.videome')) || null
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -135,7 +151,7 @@ async function identifyBinaries() {
 
 function probeMedia(filePath, ffprobePath) {
   return new Promise((resolve, reject) => {
-    const child = spawn(ffprobePath, ['-v', 'error', '-count_frames', '-show_streams', '-show_format', '-of', 'json', filePath], {
+    const child = spawn(ffprobePath, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -202,7 +218,7 @@ function rateValue(value) {
 }
 
 function makeThumbnail(mediaPath, ffmpegPath) {
-  return new Promise(async (resolve) => {
+  return backgroundLane.run(() => new Promise(async (resolve) => {
     const folder = path.join(app.getPath('cache'), 'videome', 'thumbnails')
     const target = path.join(folder, `${mediaDigest(mediaPath)}.jpg`)
 
@@ -227,7 +243,7 @@ function makeThumbnail(mediaPath, ffmpegPath) {
         resolve(code === 0 ? fileUrl(target) : null)
       })
     }
-  })
+  }))
 }
 
 function getPosterUrl(filePath, ffmpegPath) {
@@ -328,7 +344,7 @@ app.whenReady().then(() => {
         await fs.access(posterPath)
       } catch {
         await fs.mkdir(cacheFolder, { recursive: true })
-        await new Promise((resolve, reject) => {
+        await backgroundLane.run(() => new Promise((resolve, reject) => {
           const child = spawn(ffmpegPath, [
             '-hide_banner', '-nostdin', '-loglevel', 'error', '-y', '-ss', String(safeTime), '-i', originalPath,
             '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', posterPath,
@@ -337,7 +353,7 @@ app.whenReady().then(() => {
           child.stderr.on('data', (chunk) => { output += chunk.toString() })
           child.on('error', reject)
           child.on('close', (code) => code === 0 ? resolve() : reject(new Error(output)))
-        })
+        }))
       }
 
       return new Response(await fs.readFile(posterPath), { headers: { 'Content-Type': 'image/jpeg', 'Cache-Control': 'private, max-age=31536000' } })
@@ -462,7 +478,7 @@ ipcMain.handle('videome:create-preview-proxy', async (_event, rawPath) => {
       await fs.mkdir(cacheFolder, { recursive: true })
       const partialPath = `${proxyPath}.partial.mp4`
       try {
-        await new Promise((resolve, reject) => {
+        await backgroundLane.run(() => new Promise((resolve, reject) => {
           const child = spawn(ffmpegPath, buildPreviewProxyArguments(sourcePath, partialPath), {
           stdio: ['ignore', 'ignore', 'pipe'],
           windowsHide: true,
@@ -479,7 +495,7 @@ ipcMain.handle('videome:create-preview-proxy', async (_event, rawPath) => {
             if (code === 0) resolve()
             else reject(new Error(stderr.trim().split(/\r?\n/).at(-1) || `FFmpeg 退出 (${code})`))
           })
-        })
+        }))
         const stat = await fs.stat(partialPath)
         if (!stat.size) throw new Error('预览代理文件为空。')
         await fs.rename(partialPath, proxyPath)
@@ -574,11 +590,11 @@ ipcMain.handle('videome:emit-preview-frames', async (event, paths = []) => {
         try {
           await fs.access(framePath)
         } catch {
-          await new Promise((resolve) => {
+          await backgroundLane.run(() => new Promise((resolve) => {
             const child = spawn(ffmpegPath, ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y', '-ss', String(Math.max(0, time)), '-i', mediaPath, '-frames:v', '1', '-vf', 'scale=512:-2', '-q:v', '4', framePath], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })
             child.on('error', () => resolve(false))
             child.on('close', (code) => resolve(code === 0))
-          })
+          }))
         }
         try {
           await fs.access(framePath)
@@ -702,7 +718,8 @@ ipcMain.handle('videome:export-frame', async (_event, { asset, time, width, heig
 })
 
 ipcMain.handle('videome:export', async (event, { settings, project }) => {
-  if (exportProcess) return { ok: false, reason: '已有导出任务正在运行。' }
+  if (!exportGate.acquire('ordinary')) return { ok: false, reason: '已有普通导出或批量混剪正在运行。' }
+  try {
 
   for (const asset of project.assets || []) {
     if (!asset.path) continue
@@ -771,7 +788,7 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
     if (!event.sender.isDestroyed()) event.sender.send('videome:export-progress', data)
   }
 
-  return new Promise((resolve) => {
+  return await new Promise((resolve) => {
     let errors = ''
     let pendingOutput = ''
     let lastSize = null
@@ -859,6 +876,10 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
       }
     })
   })
+  } finally {
+    exportGate.release('ordinary')
+    void batchManager.then((service) => service.pump())
+  }
 })
 
 ipcMain.handle('videome:cancel-export', () => {
@@ -902,8 +923,13 @@ ipcMain.handle('videome:open-preview', async (event, asset) => {
   }
 })
 
-app.on('before-quit', () => {
+let finishedShutdown = false
+app.on('before-quit', (event) => {
+  if (finishedShutdown || !singleInstanceLock) return
+  event.preventDefault()
+  backgroundLane.stopping = true
   for (const job of activeJobs) job.kill('SIGTERM')
+  void batchManager.then((service) => service.shutdown()).finally(() => { finishedShutdown = true; app.quit() })
 })
 
 app.on('window-all-closed', () => {

@@ -35,14 +35,15 @@ Electron 开发模式会检查以下常见路径：
 /usr/bin/ffprobe
 ```
 
-macOS 打包配置中的 `extraResources` 还引用：
+macOS 打包前通过 `npm run bundle:media` 创建：
 
 ```text
-/opt/homebrew/opt/ffmpeg/bin/ffmpeg
-/opt/homebrew/opt/ffmpeg/bin/ffprobe
+media-bin/ffmpeg
+media-bin/ffprobe
+media-bin/lib/*.dylib
 ```
 
-如果本机路径不同，需要在 `package.json` 的 `build.extraResources` 中调整，或在打包前建立对应的安装路径。
+工具默认来自 `/opt/homebrew/bin`，可通过 `VIDEOME_FFMPEG` 与 `VIDEOME_FFPROBE` 覆盖源路径。脚本递归收集非系统动态库，改写为 `@loader_path` 相对依赖并执行本地 ad-hoc 签名；`dist:mac` 自动执行该步骤。它不代替发行所需的 Developer ID 签名和公证。批量模块位于 `electron/batch`，随现有 Electron 文件规则一起打包。
 
 ## 2. 浏览器预览
 

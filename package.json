@@ -11,7 +11,8 @@
     "start": "npm run dev",
     "test": "vitest run",
     "build": "vite build",
-    "dist:mac": "npm run build && electron-builder --mac dir"
+    "bundle:media": "node scripts/bundle-media.cjs",
+    "dist:mac": "npm run build && npm run bundle:media && electron-builder --mac dir"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "5.3.0",
@@ -37,11 +38,11 @@
     "productName": "Videome",
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "!electron/**/*.test.js"
     ],
     "extraResources": [
-      { "from": "/opt/homebrew/opt/ffmpeg/bin/ffmpeg", "to": "media-bin/ffmpeg" },
-      { "from": "/opt/homebrew/opt/ffmpeg/bin/ffprobe", "to": "media-bin/ffprobe" }
+      { "from": "media-bin", "to": "media-bin" }
     ],
     "mac": {
       "target": "dir",

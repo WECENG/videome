@@ -13,6 +13,7 @@ Videome 是一款本地优先（local-first）的 AI 辅助视频创作工具。
 - **字幕工作流**：手工编辑字幕、导入/导出 SRT，并在导出时烧录字幕。
 - **配乐与混音**：导入已授权的本地音乐，支持循环、淡入淡出、音量和人声自动避让参数。
 - **成片导出**：支持 H.264、HEVC、FFV1，MP4、MOV、MKV、WebM，以及原码流保留模式（有严格条件限制）。
+- **批量混剪**：长视频镜头对齐切片、固定种子随机重组、批次内去重、1–8 路受控并发，用户可配置每批生成 1–1000 条，支持暂停与断点恢复，以及原始切片代表工程。详见 [批量混剪说明](docs/BATCH-MIX.md)。
 - **本地工程**：工程保存为 `.videome` 文件，自动保存和素材清单保存在本机，不上传源媒体。
 
 ## 快速开始
@@ -27,7 +28,7 @@ Videome 是一款本地优先（local-first）的 AI 辅助视频创作工具。
 brew install ffmpeg
 ```
 
-桌面版会寻找 `ffmpeg` 和 `ffprobe`。开发环境常用路径包括 `/opt/homebrew/bin`、`/usr/local/bin` 和 `/usr/bin`；macOS 打包配置还会尝试从 `/opt/homebrew/opt/ffmpeg/bin` 把二进制复制到应用资源中。
+桌面版会寻找 `ffmpeg` 和 `ffprobe`。开发环境常用路径包括 `/opt/homebrew/bin`、`/usr/local/bin` 和 `/usr/bin`；macOS 打包前自动收集工具及非系统动态库并改写为应用内相对依赖。
 
 ### 安装依赖
 

@@ -29,6 +29,24 @@ contextBridge.exposeInMainWorld('videome', {
   exportMedia: (payload) => ipcRenderer.invoke('videome:export', payload),
   cancelExport: () => ipcRenderer.invoke('videome:cancel-export'),
   openPreview: (asset) => ipcRenderer.invoke('videome:open-preview', asset),
+  pickBatchOutputDirectory: () => ipcRenderer.invoke('videome:batch-pick-directory'),
+  createBatchMixAnalysis: (payload) => ipcRenderer.invoke('videome:batch-analyze', payload),
+  getBatchMixJob: (id) => ipcRenderer.invoke('videome:batch-get', id),
+  listBatchMixJobs: () => ipcRenderer.invoke('videome:batch-list'),
+  startBatchMix: (id) => ipcRenderer.invoke('videome:batch-start', id),
+  pauseBatchMix: (id) => ipcRenderer.invoke('videome:batch-pause', id),
+  resumeBatchMix: (payload) => ipcRenderer.invoke('videome:batch-resume', payload),
+  retryBatchMix: (id) => ipcRenderer.invoke('videome:batch-retry', id),
+  cancelBatchMix: (id) => ipcRenderer.invoke('videome:batch-cancel', id),
+  removeBatchMix: (id) => ipcRenderer.invoke('videome:batch-remove', id),
+  clearBatchMixCache: () => ipcRenderer.invoke('videome:batch-clear-cache'),
+  openBatchDirectory: (id) => ipcRenderer.invoke('videome:batch-open-directory', id),
+  createBatchMixProject: (payload) => ipcRenderer.invoke('videome:batch-create-project', payload),
+  onBatchMixProgress(callback) {
+    const handler = (_event, job) => callback(job)
+    ipcRenderer.on('videome:batch-progress', handler)
+    return () => ipcRenderer.removeListener('videome:batch-progress', handler)
+  },
   onExportProgress(callback) {
     const handler = (_event, progress) => callback(progress)
     ipcRenderer.on('videome:export-progress', handler)

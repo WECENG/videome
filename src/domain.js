@@ -172,7 +172,7 @@ export const repairPlaceholderDurationClips = (clips, assetId, sourceDuration) =
   if (actualDuration <= 10.5) return clips
   const repairedVideoIds = new Set()
   const repaired = clips.map((clip) => {
-    if (clip.assetId !== assetId || clip.kind !== 'video') return clip
+    if (clip.assetId !== assetId || clip.kind !== 'video' || clip.batchMixClip) return clip
     const oldSourceDuration = Number(clip.sourceDuration) || 0
     if (Number(clip.duration) > 10.5) return clip
     if (oldSourceDuration > 10.5 && Math.abs(oldSourceDuration - actualDuration) > 0.5) return clip
