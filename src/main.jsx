@@ -488,30 +488,30 @@ function App() {
 
   useEffect(() => {
     if (autosaveRef.current) window.clearInterval(autosaveRef.current)
-    if (project.assets.length || project.clips.some((clip) => !clip.id.startsWith('sample-'))) {
+    if (projectPath || project.assets.length || project.clips.some((clip) => !clip.id.startsWith('sample-'))) {
       autosaveRef.current = window.setInterval(() => {
         if (manualSaveInProgressRef.current) return
         const currentProject = projectRef.current
+        const currentPath = projectPathRef.current
         const projectSnapshot = { ...currentProject, autosavedAt: new Date().toISOString() }
         const identity = projectIdentityRef.current
         try {
-          const writablePath = projectPath && projectPathMatchesName(projectPath, currentProject.name) ? projectPath : null
           savePromiseRef.current = savePromiseRef.current
             .catch(() => null)
             .then(async () => {
-              if (projectIdentityRef.current !== identity) return
+              if (projectIdentityRef.current !== identity || projectPathRef.current !== currentPath) return
               localStorage.setItem('videome-autosave', JSON.stringify(projectSnapshot))
               localStorage.setItem('videome-assets', JSON.stringify(currentProject.assets))
-              writeProjectSession(localStorage, projectSnapshot, projectPath)
-              if (writablePath && window.videome?.saveProjectFile) {
-                await window.videome.saveProjectFile({ project: projectSnapshot, path: writablePath })
+              writeProjectSession(localStorage, projectSnapshot, currentPath)
+              if (currentPath && window.videome?.backupProject) {
+                await window.videome.backupProject({ project: projectSnapshot, path: currentPath })
               }
             })
-            .catch(() => setStatus('自动保存失败；请手动保存工程。', 'error'))
+            .catch(() => setStatus('自动备份失败；请手动保存工程。', 'error'))
         } catch {
-          setStatus('自动保存空间不足；请尽快保存工程。', 'error')
+          setStatus('本机恢复缓存空间不足；请尽快保存工程。', 'error')
         }
-      }, 6000)
+      }, 10000)
     }
 
     return () => {
@@ -2359,7 +2359,7 @@ function App() {
   }
 
   const previewRatio = project.frameSize.width / project.frameSize.height
-  const historyNote = projectPath ? '已关联工程文件 · 自动保存' : '本机恢复缓存 · 尚未保存工程文件'
+  const historyNote = projectPath ? '工程手动保存 · 每 10 秒自动备份' : '本机恢复缓存 · 尚未保存工程文件'
 
   function renderHeader() {
     return (
@@ -2617,7 +2617,7 @@ function App() {
       { id: 'stream-copy', icon: <FileVideo2 size={17} />, title: '原码流保留', description: '不重编码 · 条件限制较多', hint: '只适合兼容的单视频流拼接与切割' },
       { id: 'high', icon: <Clapperboard size={17} />, title: '日常高质量', description: 'H.264 · 推荐', hint: '字幕/叠加将重编码视频，音频混合会重编码音频' },
       { id: 'lossless', icon: <Disc3 size={17} />, title: '无损中间文件', description: 'FFV1 · 文件较大', hint: '无损保存合成结果，不保留原始压缩码流' },
-    ].map((item) => <button key={item.id} className={exportPreset === item.id ? 'export-profile selected' : 'export-profile'} onClick={() => { setExportPreset(item.id); setExportValue('preset', item.id) }}><span className="export-choice-icon">{item.icon}</span><span className="export-choice-text"><strong>{item.title}</strong><small>{item.description}</small></span><span className="export-choice-radio">{exportPreset === item.id && <i />}</span><span className="export-choice-hint">{item.hint}</span></button>)}</div><div className="export-options-grid"><label><span>视频编码</span><select value={project.exportSettings.videoCodec || 'h264'} onChange={(event) => setExportValue('videoCodec', event.target.value)} disabled={exportPreset !== 'high'}><option value="h264">H.264 · 通用兼容</option><option value="hevc">HEVC · 文件更小</option></select></label><label><span>文件容器</span><select value={exportFormat} onChange={(event) => { setExportFormat(event.target.value); setExportValue('format', event.target.value) }}><option value="mp4">MP4 · 通用推荐</option><option value="mov">MOV · 后期中间</option><option value="mkv">MKV · 开放封装</option><option value="webm">WebM · 网络发布</option></select></label><label><span>目标画幅</span><select value={`${project.frameSize.width}x${project.frameSize.height}`} onChange={(event) => { const [width, height] = event.target.value.split('x').map(Number); applyEdit('设置导出画幅', (current) => ({ ...current, frameSize: { width, height }, profile: `${width}×${height} · ${current.frameRate.numerator} fps` })) }}><option value="1920x1080">1920 × 1080 · FHD</option><option value="3840x2160">3840 × 2160 · 4K</option><option value="1080x1920">1080 × 1920 · 竖屏</option><option value="1080x1080">1080 × 1080 · 方形</option></select></label><label><span>比特率</span><select value={project.exportSettings.videoBitrateMbps || 12} onChange={(event) => setExportValue('videoBitrateMbps', Number(event.target.value))} disabled={exportPreset !== 'high'}><option value="6">6 Mbps · 小文件</option><option value="12">12 Mbps · 平衡</option><option value="20">20 Mbps · 高质量</option><option value="35">35 Mbps · 4K 推荐</option></select></label></div>{warning && <div className="export-warning"><Info size={13} />{warning}</div>}{exportAssessment.issues.map((issue, index) => <div key={index} className={`export-assessment-note note-${issue.severity}`}><span>{issue.severity === 'error' ? <Info size={13} /> : issue.severity === 'warning' ? <Info size={13} /> : <CheckCircle2 size={13} />}</span><div><b>{issue.title}</b><small>{issue.detail}</small></div></div>)}<div className="export-space-check"><div className="space-check-mark"><Check size={12} /></div><div><b>{estimateBytes ? `预计文件约 ${formatFileSize(estimateBytes)}` : `原码流 · ${formatCompactTime(duration)}`}</b><span>{tools.find((tool) => tool.name === 'ffmpeg')?.path ? '检测到系统 FFmpeg · 输出前执行文件校验' : '桌面版导出需安装 FFmpeg · 自动保存已开启'}</span></div><span className="local-export-tag"><CloudOff size={11} /> LOCAL</span></div><div className="export-privacy"><LockKeyhole size={12} /><span>项目、视频与字幕全程在你的设备上处理。无云上传。</span></div><div className="dialog-actions"><button className="dialog-cancel" onClick={() => setShowExport(false)}>取消</button><button className="dialog-export" disabled={!exportAssessment.ready || Boolean(progress) || !tools.find((tool) => tool.name === 'ffmpeg')?.path} onClick={startExport}>{progress ? <LoaderCircle size={14} className="loading-spin" /> : <Download size={14} />}{!tools.find((tool) => tool.name === 'ffmpeg')?.path ? '请先安装 FFmpeg' : exportAssessment.ready ? '开始导出' : '修复导出问题'}<ChevronRight size={13} /></button></div></div></div>
+    ].map((item) => <button key={item.id} className={exportPreset === item.id ? 'export-profile selected' : 'export-profile'} onClick={() => { setExportPreset(item.id); setExportValue('preset', item.id) }}><span className="export-choice-icon">{item.icon}</span><span className="export-choice-text"><strong>{item.title}</strong><small>{item.description}</small></span><span className="export-choice-radio">{exportPreset === item.id && <i />}</span><span className="export-choice-hint">{item.hint}</span></button>)}</div><div className="export-options-grid"><label><span>视频编码</span><select value={project.exportSettings.videoCodec || 'h264'} onChange={(event) => setExportValue('videoCodec', event.target.value)} disabled={exportPreset !== 'high'}><option value="h264">H.264 · 通用兼容</option><option value="hevc">HEVC · 文件更小</option></select></label><label><span>文件容器</span><select value={exportFormat} onChange={(event) => { setExportFormat(event.target.value); setExportValue('format', event.target.value) }}><option value="mp4">MP4 · 通用推荐</option><option value="mov">MOV · 后期中间</option><option value="mkv">MKV · 开放封装</option><option value="webm">WebM · 网络发布</option></select></label><label><span>目标画幅</span><select value={`${project.frameSize.width}x${project.frameSize.height}`} onChange={(event) => { const [width, height] = event.target.value.split('x').map(Number); applyEdit('设置导出画幅', (current) => ({ ...current, frameSize: { width, height }, profile: `${width}×${height} · ${current.frameRate.numerator} fps` })) }}><option value="1920x1080">1920 × 1080 · FHD</option><option value="3840x2160">3840 × 2160 · 4K</option><option value="1080x1920">1080 × 1920 · 竖屏</option><option value="1080x1080">1080 × 1080 · 方形</option></select></label><label><span>比特率</span><select value={project.exportSettings.videoBitrateMbps || 12} onChange={(event) => setExportValue('videoBitrateMbps', Number(event.target.value))} disabled={exportPreset !== 'high'}><option value="6">6 Mbps · 小文件</option><option value="12">12 Mbps · 平衡</option><option value="20">20 Mbps · 高质量</option><option value="35">35 Mbps · 4K 推荐</option></select></label></div>{warning && <div className="export-warning"><Info size={13} />{warning}</div>}{exportAssessment.issues.map((issue, index) => <div key={index} className={`export-assessment-note note-${issue.severity}`}><span>{issue.severity === 'error' ? <Info size={13} /> : issue.severity === 'warning' ? <Info size={13} /> : <CheckCircle2 size={13} />}</span><div><b>{issue.title}</b><small>{issue.detail}</small></div></div>)}<div className="export-space-check"><div className="space-check-mark"><Check size={12} /></div><div><b>{estimateBytes ? `预计文件约 ${formatFileSize(estimateBytes)}` : `原码流 · ${formatCompactTime(duration)}`}</b><span>{tools.find((tool) => tool.name === 'ffmpeg')?.path ? '检测到系统 FFmpeg · 输出前执行文件校验' : '桌面版导出需安装 FFmpeg · 恢复缓存已开启'}</span></div><span className="local-export-tag"><CloudOff size={11} /> LOCAL</span></div><div className="export-privacy"><LockKeyhole size={12} /><span>项目、视频与字幕全程在你的设备上处理。无云上传。</span></div><div className="dialog-actions"><button className="dialog-cancel" onClick={() => setShowExport(false)}>取消</button><button className="dialog-export" disabled={!exportAssessment.ready || Boolean(progress) || !tools.find((tool) => tool.name === 'ffmpeg')?.path} onClick={startExport}>{progress ? <LoaderCircle size={14} className="loading-spin" /> : <Download size={14} />}{!tools.find((tool) => tool.name === 'ffmpeg')?.path ? '请先安装 FFmpeg' : exportAssessment.ready ? '开始导出' : '修复导出问题'}<ChevronRight size={13} /></button></div></div></div>
   }
 
   function renderProgress() {
@@ -2867,6 +2867,7 @@ function App() {
     return <div className="dialog-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowProjectLocation(false) }}><section className="project-location-dialog" role="dialog" aria-modal="true" aria-labelledby="project-location-title">
       <div className="dialog-header"><div><span className="eyebrow">PROJECT FILES</span><h2 id="project-location-title">工程位置与本地文件</h2></div><button autoFocus className="icon-button compact" aria-label="关闭工程位置" onClick={() => setShowProjectLocation(false)}><X size={16} /></button></div>
       <div className="project-file-section"><span className="section-kicker">当前工程</span><strong>{project.name}</strong><p className="project-file-path">{projectPath || '尚未保存为 .videome 工程文件'}</p>{projectPath ? <div className="project-file-actions"><button onClick={() => void revealProject()}><FolderOpen size={14} />{folderLabel}</button><button onClick={() => void navigator.clipboard.writeText(projectPath).then(() => setStatus('已复制工程路径。')).catch(() => setStatus('复制失败，请手动选择路径。', 'error'))}><Copy size={14} />复制路径</button><button onClick={() => void saveProject({ saveAs: true })}>另存为…</button></div> : <><p>当前修改保存在本机恢复缓存。保存工程后可自行管理和重新打开。</p><button className="project-primary-action" onClick={() => void saveProject()}><Download size={14} />选择位置并保存</button></>}</div>
+      {projectPath && <div className="project-file-section"><span className="section-kicker">自动备份</span><p className="project-file-path">同目录 / {pathBasename(projectPath).replace(/\.autosave(?:-\d{8}-\d{6})?\.videome$/i, '').replace(/\.videome$/i, '')}.autosave-时间戳.videome</p><p>每 10 秒生成带时间戳的最新备份，并清理同工程旧备份；不修改原工程。可通过“项目 → 打开工程”打开备份。</p></div>}
       <div className="project-file-section"><span className="section-kicker">源素材</span><p>{project.assets.length} 个已登记素材。原文件保留在导入位置，工程保存剪辑信息与文件路径。</p><button className="project-text-action" onClick={() => { setShowProjectLocation(false); setActivePanel('素材库'); setActiveTab('edit') }}>查看素材库 <ChevronRight size={13} /></button></div>
       <div className="project-file-section"><span className="section-kicker">本机恢复缓存</span><p className="project-file-path">{storageLocations?.dataDirectory || '当前浏览器的本地存储'}</p><p>用于恢复编辑状态和批次记录，成片保存在生成时选择的输出目录。</p></div>
     </section></div>

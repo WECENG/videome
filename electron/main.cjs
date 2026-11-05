@@ -7,7 +7,7 @@ const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { buildExportArguments, classifyAsset } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
-const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectFileName, withProjectExtension, writeProjectSnapshot } = require('./project.cjs')
+const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectBackupSourcePath, projectFileName, withProjectExtension, writeProjectBackup, writeProjectSnapshot } = require('./project.cjs')
 const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
 const { registerBatchMixIpc } = require('./batch/ipc.cjs')
 const { locateTool, fontResources, encoderFor, hardwareFailure, filterPath } = require('./runtime.cjs')
@@ -669,6 +669,12 @@ ipcMain.handle('videome:write-project', async (_event, payload = {}) => {
     roots.forEach((entry) => thumbnailRoots.add(entry))
     return writeProjectSnapshot(selectedPath, safeProject)
   })
+})
+
+ipcMain.handle('videome:backup-project', async (_event, payload = {}) => {
+  const { project, path: projectPath } = payload || {}
+  const safeProject = normalizeProjectForPersistence(project)
+  return queueProjectWrite(projectBackupSourcePath(projectPath), () => writeProjectBackup(projectPath, safeProject))
 })
 
 ipcMain.handle('videome:save-strings', async (_event, { content, defaultFileName, type = 'srt' }) => {
