@@ -27,12 +27,9 @@ describe('Windows media extraction', () => {
       const source = path.join(directory, '素材 文件.txt')
       const destination = path.join(directory, '输出 目录')
       const archive = path.join(directory, '媒体 资源.zip')
-      await writeFile(source, 'Videome 中文路径')
       await mkdir(destination)
-      const powershell = path.win32.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-      await exec(powershell, ['-NoProfile', '-NonInteractive', '-Command', 'Compress-Archive -LiteralPath $env.VIDEOME_ZIP_SOURCE -DestinationPath $env.VIDEOME_ZIP_ARCHIVE'], {
-        env: { ...process.env, VIDEOME_ZIP_SOURCE: source, VIDEOME_ZIP_ARCHIVE: archive }, windowsHide: true,
-      })
+      // A fixed UTF-8 ZIP isolates extraction from PowerShell and shell quoting.
+      await writeFile(archive, Buffer.from('UEsDBBQAAAgAAAAAZV0a/PlfFAAAABQAAAARAAAA57Sg5p2QIOaWh+S7ti50eHRWaWRlb21lIOS4reaWh+i3r+W+hFBLAQIUAxQAAAgAAAAAZV0a/PlfFAAAABQAAAARAAAAAAAAAAAAAACAAQAAAADntKDmnZAg5paH5Lu2LnR4dFBLBQYAAAAAAQABAD8AAABDAAAAAAA=', 'base64'))
       await extractWindowsZip(archive, destination, { run: (binary, args, options) => exec(binary, args, {
         ...options, env: { ...process.env, PATH: directory },
       }) })
