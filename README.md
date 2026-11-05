@@ -13,7 +13,7 @@ Videome 是一款本地视频剪辑与批量混剪桌面工具，使用 React、
 
 目前交付内部测试包：Mac 使用 ad-hoc 本地签名，未做 Developer ID 签名或公证；Windows 未配置发行签名。Intel Mac、Windows ARM、32 位、商店发布和自动更新不在当前交付范围。具体证据见[双平台实现与验收记录](docs/CROSS-PLATFORM-IMPLEMENTATION-REPORT.md)。
 
-2026-11-05 的[双平台成功构建 #6](https://github.com/WECENG/videome/actions/runs/41957372222)已上传安装包。在运行页的 Artifacts 下载 `Videome-win32-x64-6` 或 `Videome-darwin-arm64-6`（需要登录 GitHub，保留 30 天）。
+2026-11-05 的[双平台成功构建 #6](https://github.com/WECENG/videome/actions/runs/41957372222)已上传安装包。历史构建可在运行页的 Artifacts 下载 `Videome-win32-x64-6` 或 `Videome-darwin-arm64-6`（需要登录 GitHub，保留 30 天）；后续成功构建会自动出现在仓库的 Releases 中。
 
 ## 主要功能
 
@@ -79,7 +79,7 @@ Windows 原生构建将 `dist:mac` 换为 `dist:win`。打包前先完成 `media
 | `npm run acceptance:fixtures` | 生成供人工验收使用的 90 秒测试素材 |
 | `npm run diagnostics` | 收集本机环境及批次诊断到 `output/diagnostics.json` |
 
-GitHub Actions 提供手动触发的 **Desktop internal test packages** 工作流，分别在 Mac 和 Windows runner 构建，只上传 Artifacts，不自动发布 Release。工作流已提供不代表远程构建或人工验收已经通过。
+GitHub Actions 提供手动触发的 **Desktop internal test packages** 工作流，分别在 Mac 和 Windows runner 构建。两端构建和包内检查全部成功后，工作流会自动创建一个 GitHub 预发布版本，标签格式为 `v<版本>-build.<运行号>`（例如 `v0.1.0-build.7`），并附上 `.dmg`、`.zip`、Windows `.exe` 和 `SHA256SUMS.txt`。同一次运行重试时会更新同名 Release；构建过程仍会保留 Artifacts 作为诊断备份。工作流已提供不代表远程构建或人工验收已经通过。
 
 ## 项目结构
 

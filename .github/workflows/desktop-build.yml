@@ -2,7 +2,7 @@ name: Desktop internal test packages
 on:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
   package:
     strategy:
@@ -78,3 +78,62 @@ jobs:
             release/build-info.json
             output/**/*.json
             output/*.log
+
+  release:
+    name: Publish GitHub Release
+    if: ${{ needs.package.result == 'success' }}
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v7.0.2
+        with:
+          pattern: Videome-*
+          path: release-downloads
+          merge-multiple: false
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-assets
+          mkdir -p release-assets
+          find release-downloads -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' \) -exec cp {} release-assets/ \;
+
+          shopt -s nullglob
+          package_files=(release-assets/*.dmg release-assets/*.zip release-assets/*.exe)
+          if (( ${#package_files[@]} == 0 )); then
+            echo 'No desktop package files were found in the build artifacts.' >&2
+            exit 1
+          fi
+
+          : > release-assets/SHA256SUMS.txt
+          for file in "${package_files[@]}"; do
+            (cd release-assets && sha256sum "$(basename "$file")") >> release-assets/SHA256SUMS.txt
+          done
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          tag="v${version}-build.${GITHUB_RUN_NUMBER}"
+          title="Videome ${version} (build #${GITHUB_RUN_NUMBER})"
+          notes="$(printf 'Automated desktop packages for commit %s.\n\nThis is a prerelease build for macOS Apple Silicon and Windows x64.' "$GITHUB_SHA")"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+            gh release edit "$tag" --title "$title" --notes "$notes" --prerelease
+          else
+            gh release create "$tag" release-assets/* \
+              --title "$title" \
+              --notes "$notes" \
+              --prerelease
+          fi

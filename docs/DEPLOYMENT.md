@@ -128,7 +128,7 @@ npm run verify:package -- /absolute/path/to/Resources
 
 在已推送的源码版本上，手动运行 [Desktop internal test packages](../.github/workflows/desktop-build.yml)。当前矩阵为 `macos-15` arm64、`windows-2022` x64，并在任务开始检查实际架构。
 
-流程包括 `npm ci`、媒体准备、完整测试、原生构建、包内实际转码检查及验收材料生成。依赖安装、媒体准备和检查、测试、构建及包检查日志会上传。产物通过 Artifacts 保存 30 天，不自动创建公开 Release，不自动运行 Windows 人工验收。
+流程包括 `npm ci`、媒体准备、完整测试、原生构建、包内实际转码检查及验收材料生成。依赖安装、媒体准备和检查、测试、构建及包检查日志会上传。两端任务全部成功后，汇总任务会自动创建 GitHub 预发布版本，标签格式为 `v<版本>-build.<运行号>`，并附上 `.dmg`、`.zip`、Windows `.exe` 和汇总校验文件；构建过程仍会保留 Artifacts（30 天）作为诊断备份。工作流不会替代 Windows 或 macOS 的人工验收。
 
 - `Videome-<平台>-<运行号>`：安装包、摘要、构建信息、日志和 `manual-acceptance/`。
 - `media-<平台>-<运行号>`：独立媒体 `.tar.gz`，供本机构建导入。
