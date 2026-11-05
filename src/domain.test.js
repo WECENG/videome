@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  addTrack,
   assessExport,
   audioPreviewUrl,
   createMediaClips,
@@ -13,12 +14,111 @@ import {
   moveClipWithLinked,
   parseSrt,
   removeAssetReferences,
+  removeTrack,
   replaceAssetById,
   repairPlaceholderDurationClips,
   resolveMediaDurationSeconds,
   splitClips,
   unlinkClipPair,
 } from './domain.js'
+
+describe('track management', () => {
+  it.each([
+    ['video', '视频轨 1', 'lime'],
+    ['audio', '音频轨 1', 'cyan'],
+    ['graphics', '图文轨 1', 'amber'],
+    ['subtitle', '字幕轨 1', 'violet'],
+  ])('adds a %s track without mutating the previous undo snapshot', (type, label, accent) => {
+    const tracks = Object.freeze([])
+    const result = addTrack(tracks, type)
+    expect(tracks).toHaveLength(0)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ type, label, accent, locked: false, muted: false })
+  })
+
+  it('avoids duplicate names after deleting a middle track and keeps new tracks on top', () => {
+    const tracks = [
+      { id: 'first', type: 'video', label: '视频轨 1', order: 0 },
+      { id: 'third', type: 'video', label: '视频轨 3', order: 6 },
+    ]
+    const result = addTrack(tracks, 'video')
+    expect(result.at(-1)).toMatchObject({ label: '视频轨 4', order: 7 })
+    expect(tracks).toHaveLength(2)
+    expect(() => addTrack(tracks, 'other')).toThrow('不支持的轨道类型')
+  })
+
+  const linkedProject = () => ({
+    tracks: [{ id: 'video', type: 'video', order: 0 }, { id: 'audio', type: 'audio', order: 1 }, { id: 'music', type: 'audio', order: 2 }],
+    clips: [
+      { id: 'picture', trackId: 'video', kind: 'video', assetId: 'source', audioLinked: true },
+      { id: 'sound', trackId: 'audio', kind: 'audio', assetId: 'source', linkedClipId: 'picture' },
+      { id: 'song', trackId: 'music', kind: 'audio', assetId: 'song' },
+    ],
+    assets: [{ id: 'source' }, { id: 'song' }],
+  })
+
+  it.each(['video', 'audio'])('deletes the %s track with linked clips while preserving source assets', (trackId) => {
+    const project = linkedProject()
+    const next = removeTrack(project, trackId)
+    expect(next.tracks.map((track) => track.id)).toEqual(project.tracks.filter((track) => track.id !== trackId).map((track) => track.id))
+    expect(next.tracks.map((track) => track.order)).toEqual([0, 1])
+    expect(next.clips.map((clip) => clip.id)).toEqual(['song'])
+    expect(next.assets).toBe(project.assets)
+    expect(project.clips).toHaveLength(3)
+    expect(project.tracks).toHaveLength(3)
+  })
+
+  it('protects locked tracks and locked linked companions from deletion', () => {
+    const project = linkedProject()
+    project.tracks[1].locked = true
+    expect(removeTrack(project, 'audio')).toBe(project)
+    expect(removeTrack(project, 'video')).toBe(project)
+    expect(removeTrack(project, 'missing')).toBe(project)
+  })
+
+  it('removes only deleted subtitle cues and preserves cues still used on another track', () => {
+    const project = {
+      tracks: [{ id: 'one', type: 'subtitle' }, { id: 'two', type: 'subtitle' }],
+      clips: [
+        { id: 'first', kind: 'subtitle', trackId: 'one', sourceCueId: 'first' },
+        { id: 'shared-one', kind: 'subtitle', trackId: 'one', sourceCueId: 'shared' },
+        { id: 'shared-two', kind: 'subtitle', trackId: 'two', sourceCueId: 'shared' },
+      ],
+      subtitle: { text: '第一行\n保留行', cues: [{ id: 'first', text: '第一行' }, { id: 'shared', text: '保留行' }] },
+    }
+    const next = removeTrack(project, 'one')
+    expect(next.subtitle).toMatchObject({ text: '保留行', cues: [{ id: 'shared', text: '保留行' }] })
+    expect(next.clips.map((clip) => clip.id)).toEqual(['shared-two'])
+  })
+
+  it('clears orphaned legacy cues when deleting the last subtitle track', () => {
+    const project = {
+      tracks: [{ id: 'subtitles', type: 'subtitle' }],
+      clips: [],
+      subtitle: { cues: [{ id: 'legacy', text: '旧字幕' }], text: '旧字幕' },
+    }
+    expect(removeTrack(project, 'subtitles')).toMatchObject({ tracks: [], clips: [], subtitle: { cues: [], text: '' } })
+  })
+
+  it('recreates a video track when inserting media after all tracks have been deleted', () => {
+    const result = createMediaClips({
+      assets: [{ id: 'video', name: 'source.mp4', kind: 'video', duration: 3, audioCodec: 'aac' }],
+      track: undefined, tracks: [], clips: [], playhead: 0, duration: 60,
+    })
+    expect(result.tracks.map((track) => track.type)).toEqual(['video', 'audio'])
+    expect(result.clips).toHaveLength(2)
+    expect(result.clips.every((clip) => result.tracks.some((track) => track.id === clip.trackId))).toBe(true)
+  })
+
+  it('inserts audio into the chosen compatible track', () => {
+    const tracks = [{ id: 'first', type: 'audio' }, { id: 'chosen', type: 'audio' }]
+    const result = createMediaClips({
+      assets: [{ id: 'audio', name: 'sound.wav', kind: 'audio', duration: 3 }],
+      track: tracks[1], tracks, clips: [], playhead: 0, duration: 60,
+    })
+    expect(result.inserted[0].trackId).toBe('chosen')
+  })
+})
 
 describe('subtitle and timeline helpers', () => {
   it('never expands intentional batch slices into full-length import placeholders', () => {

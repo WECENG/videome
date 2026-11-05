@@ -89,6 +89,7 @@ import {
   parseSubtitleFile,
   removeAssetReferences,
   removeClip,
+  removeTrack,
   removeTrackClips,
   replaceAssetById,
   repairPlaceholderDurationClips,
@@ -96,10 +97,12 @@ import {
   sampleProject,
   splitClips,
   thumbnailForTime,
+  trackTypes,
   unlinkClipPair,
 } from './domain.js'
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
+import { DeleteTrackDialog, TimelineTrackMenu } from './TimelineTrackMenu.jsx'
 import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
 
 const FALLBACK_TOOLS = [
@@ -158,6 +161,8 @@ function App() {
   const [exportFormat, setExportFormat] = useState(() => project?.exportSettings?.format || 'mp4')
   const [search, setSearch] = useState('')
   const [assetMenuId, setAssetMenuId] = useState(null)
+  const [timelineMenu, setTimelineMenu] = useState(null)
+  const [deleteTrackId, setDeleteTrackId] = useState(null)
   const [trimDrafts, setTrimDrafts] = useState({ clipId: null, start: '', end: '' })
   const [mood, setMood] = useState('sunny')
   const [tempo, setTempo] = useState('mid')
@@ -190,6 +195,7 @@ function App() {
   const fileInputRef = useRef(null)
   const audioRef = useRef(null)
   const timelineRef = useRef(null)
+  const trackListRef = useRef(null)
   const objectUrlsRef = useRef(new Set())
   const playerRef = useRef(null)
   const projectNameInputRef = useRef(null)
@@ -235,7 +241,10 @@ function App() {
   useEffect(() => {
     const viewport = timelineRef.current
     if (!viewport) return undefined
-    const updateWidth = () => setTimelineViewportWidth(viewport.clientWidth || 1000)
+    const updateWidth = () => {
+      setTimelineViewportWidth(viewport.clientWidth || 1000)
+      trackListRef.current?.style.setProperty('--timeline-scrollbar-size', `${viewport.offsetHeight - viewport.clientHeight}px`)
+    }
     updateWidth()
     const observer = new ResizeObserver(updateWidth)
     observer.observe(viewport)
@@ -410,7 +419,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.target.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (event.target.closest('input, textarea, select, [contenteditable="true"], [role="menu"], dialog')) return
       const key = event.key.toLowerCase()
       const mod = event.metaKey || event.ctrlKey
 
@@ -760,7 +769,9 @@ function App() {
   }
 
   function addSubtitleClip(cue) {
-    const subtitleTrack = project.tracks.find((track) => track.type === 'subtitle') || project.tracks.find((track) => track.type === 'graphics')
+    const subtitleTrack = (activeTrack?.type === 'subtitle' && !activeTrack.locked ? activeTrack : null)
+      || project.tracks.find((track) => track.type === 'subtitle' && !track.locked)
+      || project.tracks.find((track) => track.type === 'graphics' && !track.locked)
     const targetTrack = subtitleTrack || { id: 'subtitles', type: 'subtitle', label: '字幕', accent: 'violet', locked: false, muted: false }
     if (!subtitleTrack) {
       setProject((current) => ({ ...current, tracks: [...current.tracks, targetTrack] }))
@@ -1080,6 +1091,8 @@ function App() {
     setPlaying(false)
     setShowProjectMenu(false)
     setShowProjectLocation(false)
+    setTimelineMenu(null)
+    setDeleteTrackId(null)
     setEditHistory([])
     setEditFuture([])
     setSelectedId(migrated.clips[0]?.id || null)
@@ -1237,6 +1250,43 @@ function App() {
     if (selectedId && removedIds.has(selectedId)) setSelectedId(null)
     if (removedIds.size) updateSelectedClipIds(selectedClipIdsRef.current.filter((id) => !removedIds.has(id)))
     setStatus(`已清空「${track.label}」中的 ${directClips.length} 个片段${linkedCount ? `，并移除 ${linkedCount} 个关联片段` : ''}。`)
+  }
+
+  function requestTrackDeletion(trackId) {
+    const current = projectRef.current
+    const track = current.tracks.find((item) => item.id === trackId)
+    if (!track) return
+    const next = removeTrack(current, trackId)
+    if (next === current) {
+      setStatus(track.locked ? `「${track.label}」已锁定；请先解锁再删除轨道。` : '联动片段所在轨道已锁定；请先解锁再删除轨道。', 'info')
+      return
+    }
+    if (next.clips.length < current.clips.length) {
+      setDeleteTrackId(trackId)
+      return
+    }
+    deleteTrackCommand(trackId)
+  }
+
+  function deleteTrackCommand(trackId) {
+    const current = projectRef.current
+    const track = current.tracks.find((item) => item.id === trackId)
+    const next = removeTrack(current, trackId)
+    setDeleteTrackId(null)
+    if (!track || next === current) {
+      if (track) setStatus('轨道或其联动片段已锁定，请先解锁。', 'info')
+      return
+    }
+    const retainedIds = new Set(next.clips.map((clip) => clip.id))
+    applyEdit('删除轨道', (projectState) => removeTrack(projectState, trackId))
+    if (selectedId && !retainedIds.has(selectedId)) setSelectedId(null)
+    updateSelectedClipIds(selectedClipIdsRef.current.filter((id) => retainedIds.has(id)))
+    if (activeTrack?.id === trackId) {
+      const index = current.tracks.findIndex((item) => item.id === trackId)
+      setActiveTrackId(next.tracks[Math.min(index, next.tracks.length - 1)]?.id || null)
+    }
+    const removedCount = current.clips.length - next.clips.length
+    setStatus(`已删除「${track.label}」${removedCount ? `及 ${removedCount} 个片段` : ''}，可撤销恢复。`)
   }
 
   function setClipVolume(clipId, volume) {
@@ -1407,11 +1457,62 @@ function App() {
   }
 
   function addTrackCommand(type) {
-    const nextTracks = addTrack(project.tracks, type)
+    const nextTracks = addTrack(projectRef.current.tracks, type)
     const track = nextTracks.at(-1)
     applyEdit('新增轨道', (current) => ({ ...current, tracks: nextTracks }))
     setActiveTrackId(track.id)
     setStatus(`已添加「${track.label}」。`)
+    window.requestAnimationFrame(() => {
+      const row = trackListRef.current?.lastElementChild
+      if (row) trackListRef.current.scrollTop = row.offsetTop
+    })
+  }
+
+  function openTimelineMenu(event, kind, trackId = null) {
+    event.preventDefault()
+    event.stopPropagation()
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const context = event.type === 'contextmenu'
+    setTimelineMenu({
+      kind,
+      trackId,
+      anchor: context
+        ? { left: event.clientX, top: event.clientY, bottom: event.clientY }
+        : { left: bounds.left, top: bounds.top, bottom: bounds.bottom },
+    })
+  }
+
+  function renderAddTrackButton() {
+    return <button className="add-track-trigger" aria-haspopup="menu" aria-expanded={timelineMenu?.kind === 'add'} onClick={(event) => openTimelineMenu(event, 'add')}><Plus size={12} />添加轨道 <ChevronDown size={10} /></button>
+  }
+
+  function renderTimelineMenu() {
+    if (!timelineMenu) return null
+    const icons = { video: FileVideo2, audio: AudioLines, graphics: ImagePlus, subtitle: Subtitles }
+    const track = project.tracks.find((item) => item.id === timelineMenu.trackId)
+    if (timelineMenu.kind === 'track' && !track) return null
+    const items = timelineMenu.kind === 'add'
+      ? trackTypes.map((item) => ({ id: item.type, icon: icons[item.type], label: item.label, action: () => addTrackCommand(item.type) }))
+      : [
+          { id: 'mute', icon: track.muted ? Volume2 : VolumeX, label: track.muted ? '取消静音' : '静音轨道', action: () => toggleTrackFor(track.id, 'muted') },
+          { id: 'lock', icon: LockKeyhole, label: track.locked ? '解锁轨道' : '锁定轨道', action: () => toggleTrackFor(track.id, 'locked') },
+          { id: 'clear', icon: RotateCcw, label: '清空轨道内容', hint: '保留轨道 · Shift+Delete', disabled: track.locked, action: () => clearTrackContents(track.id) },
+          { id: 'delete', icon: Trash2, label: '删除轨道', disabled: track.locked, danger: true, action: () => requestTrackDeletion(track.id) },
+        ]
+    return <TimelineTrackMenu key={`${timelineMenu.kind}-${timelineMenu.trackId || ''}`} anchor={timelineMenu.anchor} title={timelineMenu.kind === 'add' ? '选择轨道类型' : track.label} items={items} onClose={() => setTimelineMenu(null)} />
+  }
+
+  function renderDeleteTrackDialog() {
+    if (!deleteTrackId) return null
+    const track = project.tracks.find((item) => item.id === deleteTrackId)
+    if (!track) return null
+    const clipCount = project.clips.filter((clip) => clip.trackId === track.id).length
+    const linkedCount = project.clips.length - removeTrackClips(project.clips, track.id).length - clipCount
+    return <DeleteTrackDialog track={track} clipCount={clipCount} linkedCount={linkedCount} onCancel={() => setDeleteTrackId(null)} onConfirm={() => deleteTrackCommand(track.id)} />
+  }
+
+  function syncTrackScroll(event, target) {
+    if (target && Math.abs(target.scrollTop - event.currentTarget.scrollTop) > 0.5) target.scrollTop = event.currentTarget.scrollTop
   }
 
   function toggleTrack(key) {
@@ -1664,7 +1765,7 @@ function App() {
   }
 
   function addGraphicClip() {
-    const existing = project.tracks.find((track) => track.type === 'graphics')
+    const existing = (activeTrack?.type === 'graphics' && !activeTrack.locked ? activeTrack : null) || project.tracks.find((track) => track.type === 'graphics' && !track.locked)
     const track = existing || { id: `graphics-${Date.now()}`, type: 'graphics', label: '图文标题', accent: 'amber', order: 3, locked: false, muted: false }
     const clip = {
       id: `graphics-${Date.now()}`,
@@ -2030,12 +2131,12 @@ function App() {
 
     return (
       <div className={`track-row ${isSelected ? 'track-is-active' : ''} track-type-${track.type} ${track.locked ? 'track-is-locked' : ''} ${track.muted ? 'track-is-muted' : ''}`} key={track.id}>
-        <div className="track-info" onClick={() => { setActiveTrackId(track.id); setSelectedId(visibleClip?.id || null) }}>
-          <span className={`track-icon track-color-${track.accent}`}><TrackIcon type={track.type} /></span>
+        <div className="track-info" onContextMenu={(event) => openTimelineMenu(event, 'track', track.id)} onClick={() => { setActiveTrackId(track.id); setSelectedId(visibleClip?.id || null) }}>
+          <button className={`track-icon track-color-${track.accent}`} aria-label={`${track.label}轨道操作`} title="轨道操作：清空内容、删除轨道" aria-haspopup="menu" aria-expanded={timelineMenu?.trackId === track.id} onClick={(event) => openTimelineMenu(event, 'track', track.id)}><TrackIcon type={track.type} /></button>
           <div className="track-name-wrap"><span className="track-index">T{String(trackIndex + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div>
           <div className="track-controls">
             <button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'muted') }}><VolumeX size={11} className={track.muted ? 'toggle-on' : ''} /></button>
-            <button className="track-control track-clear-control" aria-label={`清空${track.label}内容`} title={`清空${track.label}内容（Shift+Delete）`} onClick={(event) => { event.stopPropagation(); clearTrackContents(track.id) }}><Trash2 size={11} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'locked') }}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button>
+            <button className="track-control track-delete-control" aria-label={`删除${track.label}轨道`} title={track.locked ? '轨道已锁定，请先解锁' : `删除「${track.label}」轨道`} disabled={track.locked} onClick={(event) => { event.stopPropagation(); requestTrackDeletion(track.id) }}><Trash2 size={11} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'locked') }}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button>
           </div>
         </div>
         <div className={`track-clip-lane ${track.type === 'subtitle' ? 'subtitle-lane' : ''} ${track.type === 'audio' ? 'audio-lane' : ''}`} style={{ width: `${totalWidth}px` }} onPointerDown={(event) => {
@@ -2287,8 +2388,8 @@ function App() {
   function renderTracks() {
     return <div className={`timeline-editor-panel ${density ? 'density-compact' : ''}`}><div className="timeline-heading"><div className="timeline-title"><div><span className="eyebrow">MULTITRACK TIMELINE</span><h2>时间线</h2></div><span className="timeline-version">TCS <i>·</i> 30FPS</span></div><div className="timeline-controls"><div className="duration-chip"><Disc3 size={12} /><span>{formatCompactTime(duration)}</span></div><button className={`timeline-icon ${density ? 'is-toggled' : ''}`} title="缩紧时间线轨道" aria-label="缩紧时间线轨道" onClick={() => setDensity((value) => !value)}><Layers3 size={13} /></button><button className="timeline-icon" title="适配整个工程" aria-label="适配整个工程" onClick={fitTimelineToViewport}><Maximize2 size={13} /></button></div></div>
       {renderTimelineControls()}
-      <div className="timeline-grid" onWheel={handleWheel}><div className="timeline-sidebar"><div className="track-label-row ruler-label">TIMECODE<span>00:00:00:00</span></div><div className="tracks-list">{project.tracks.map((track, index) => renderTrack(track, index))}<button className="add-track-trigger" onClick={() => addTrackCommand(activeTrack?.type === 'audio' ? 'audio' : 'video')}><Plus size={12} />添加轨道 <ChevronDown size={10} /></button></div><div className="track-footer-info"><span><Disc3 size={11} />预览代理</span><span>已锁定：SDR</span></div></div>
-      <div className="timeline-viewport" ref={timelineRef}><div className="timeline-canvas" style={{ width: `${totalWidth}px` }}><div className="timeline-ruler" onClick={(event) => setPlayhead(timelineTimeFromClientX(event.clientX))}><div className="ruler-tick-row">{createTicks(duration, timelineContentWidth).map((tick) => <span className="ruler-tick" key={tick.position} style={{ left: `${tick.position}px` }}><i />{formatCompactTime(tick.seconds)}</span>)}</div>{guideMarkers.map((marker) => <span className="ruler-marker-label" key={marker.id} style={{ left: `${marker.start / duration * timelineContentWidth}px` }}><i />{formatCompactTime(marker.start)}</span>)}</div><div className="track-canvas">{project.tracks.map((track, index) => {
+      <div className="timeline-grid" onWheel={handleWheel}><div className="timeline-sidebar"><div className="track-label-row ruler-label">TIMECODE<span>00:00:00:00</span></div><div className="tracks-list" ref={trackListRef} onScroll={(event) => syncTrackScroll(event, timelineRef.current)}>{project.tracks.map((track, index) => renderTrack(track, index))}</div><div className="track-sidebar-footer">{renderAddTrackButton()}</div></div>
+      <div className="timeline-viewport" ref={timelineRef} onScroll={(event) => syncTrackScroll(event, trackListRef.current)}><div className="timeline-canvas" style={{ width: `${totalWidth}px` }}><div className="timeline-ruler" onClick={(event) => setPlayhead(timelineTimeFromClientX(event.clientX))}><div className="ruler-tick-row">{createTicks(duration, timelineContentWidth).map((tick) => <span className="ruler-tick" key={tick.position} style={{ left: `${tick.position}px` }}><i />{formatCompactTime(tick.seconds)}</span>)}</div>{guideMarkers.map((marker) => <span className="ruler-marker-label" key={marker.id} style={{ left: `${marker.start / duration * timelineContentWidth}px` }}><i />{formatCompactTime(marker.start)}</span>)}</div><div className="track-canvas">{project.tracks.map((track, index) => {
         const clips = project.clips.filter((clip) => clip.trackId === track.id).sort((a, b) => a.start - b.start)
         return <div className={`track-row ${activeTrack?.id === track.id ? 'track-is-active' : ''} track-type-${track.type} ${track.locked ? 'track-is-locked' : ''} ${track.muted ? 'track-is-muted' : ''}`} key={track.id}>
           <div className="track-info timeline-track-header" onClick={() => { setActiveTrackId(track.id); setSelectedId(clips.find((clip) => clip.id === selectedId)?.id || null) }}><span className={`track-icon track-color-${track.accent}`}><TrackIcon type={track.type} /></span><div className="track-name-wrap"><span className="track-index">T{String(index + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div><div className="track-controls"><button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={() => toggleTrackFor(track.id, 'muted')}><VolumeX size={11} className={track.muted ? 'toggle-on' : ''} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => toggleTrackFor(track.id, 'locked')}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button></div></div>
@@ -2304,14 +2405,14 @@ function App() {
           </div>
         </div>
       })}
-        <div className="track-add-row"><button className="add-track-trigger" onClick={() => addTrackCommand(activeTrack?.type === 'audio' ? 'audio' : 'video')}><Plus size={12} />添加轨道 <ChevronDown size={10} /></button><span>拖入素材 · 双击图文修改 · S 分割</span></div>
+        <div className="track-add-row">{renderAddTrackButton()}<span>拖入素材 · 双击图文修改 · S 分割</span></div>
       </div><div className="timeline-playhead" style={{ left: `${project.playhead / duration * timelineContentWidth}px` }}><div className="playhead-handle"><i /></div><div className="playhead-line" /></div></div></div></div>
       <div className="timeline-statusbar"><div className="selection-status"><span className="selection-dot" /><span>{selectedClip ? selectedClip.name : `${project.tracks.length} 条轨道 · ${project.clips.length} 个片段`}</span><i>·</i><span>{selectedClip ? `${formatTime(selectedClip.start)} → ${formatTime(selectedClip.start + selectedClip.duration)}` : `${project.clips.length} 个素材块`}</span></div><div className="zoom-controls"><button aria-label="缩小时间轴" title="缩小时间轴" onClick={() => setManualTimelineZoom((value) => Math.max(minimumZoom, value * 0.86))}><ZoomOut size={13} /></button><input type="range" min={minimumZoom} max="2.4" step="0.01" value={zoom} onChange={(event) => setManualTimelineZoom(Number(event.target.value), event.clientX)} aria-label="时间轴缩放" title="拖动以缩放时间轴" /><button aria-label="放大时间轴" title="放大时间轴" onClick={() => setManualTimelineZoom((value) => Math.min(2.4, value * 1.16))}><ZoomIn size={13} /></button><span>{fitTimeline ? '适配' : `${Math.round(zoom * 100)}%`}</span><span className="zoom-divider" /><button className="timeline-shortcut" title="⌘ 滚轮缩放 · Shift 滚轮横向移动 · Shift+Delete 清空当前轨道" aria-label="时间轴快捷键说明"><Info size={12} /></button></div></div>
     </div>
   }
 
   function renderTimelineControls() {
-    return <div className="timeline-transport"><div className="transport-clock">{formatTime(project.playhead)}<span>:<i>{String(Math.floor(project.playhead * 30) % 30).padStart(2, '0')}</i></span></div><button className="timeline-transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={14} /></button><button className="timeline-transport-play" aria-label={playing ? '暂停' : '播放'} onClick={togglePlayback}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}</button><button className="timeline-transport-step" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={14} /></button><span className="transport-vertical-rule" /><button className="timeline-transport-step" title="跳转标记" onClick={() => { const next = guideMarkers.find((marker) => marker.start > project.playhead); if (next) setPlayhead(next.start) }}><Flag size={13} /></button><span className="timeline-transport-label">{activeTrack?.label || '主视频'}</span><span className="timeline-transport-hint">AUDIO SCRUB <i>·</i> 30 fps</span></div>
+    return <div className="timeline-transport"><div className="transport-clock">{formatTime(project.playhead)}<span>:<i>{String(Math.floor(project.playhead * 30) % 30).padStart(2, '0')}</i></span></div><button className="timeline-transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={14} /></button><button className="timeline-transport-play" aria-label={playing ? '暂停' : '播放'} onClick={togglePlayback}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}</button><button className="timeline-transport-step" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={14} /></button><span className="transport-vertical-rule" /><button className="timeline-transport-step" title="跳转标记" onClick={() => { const next = guideMarkers.find((marker) => marker.start > project.playhead); if (next) setPlayhead(next.start) }}><Flag size={13} /></button><span className="timeline-transport-label">{activeTrack?.label || '未选择轨道'}</span><span className="timeline-transport-hint">AUDIO SCRUB <i>·</i> 30 fps</span></div>
   }
 
   function renderRightInspector() {
@@ -2483,6 +2584,8 @@ function App() {
       {message && <div className={`toast toast-${messageKind}`} role="status"><span className="toast-mark">{messageKind === 'error' ? <Info size={14} /> : messageKind === 'info' ? <Sparkles size={14} /> : <CheckCircle2 size={14} />}</span><span>{message}</span><button aria-label="关闭通知" onClick={() => setMessage('')}><X size={14} /></button></div>}
       {renderExportDialog()}
       {renderProjectLocation()}
+      {renderTimelineMenu()}
+      {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}

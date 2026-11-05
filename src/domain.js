@@ -328,6 +328,13 @@ export const isLegacySilentPreviewProxy = (url) => {
  */
 export const audioPreviewUrl = (asset, clip = {}) => asset?.proxyUrl || asset?.previewUrl || (asset?.path ? fileUrl(asset.path) : clip.path ? fileUrl(clip.path) : null)
 
+export const trackTypes = [
+  { type: 'video', label: '视频轨道', prefix: '视频轨', accents: ['lime', 'rose', 'amber', 'violet'] },
+  { type: 'audio', label: '音频轨道', prefix: '音频轨', accents: ['cyan', 'blue', 'rose', 'green'] },
+  { type: 'graphics', label: '标题图文轨道', prefix: '图文轨', accents: ['amber'] },
+  { type: 'subtitle', label: '字幕轨道', prefix: '字幕轨', accents: ['violet'] },
+]
+
 export const createMediaClips = ({ assets, track, clips, playhead, duration, tracks }) => {
   const nextClips = []
   let nextTracks = [...tracks]
@@ -336,8 +343,8 @@ export const createMediaClips = ({ assets, track, clips, playhead, duration, tra
   for (const asset of assets) {
     const kind = asset.kind === 'image' ? 'image' : asset.kind
     let targetTrack = kind === 'audio'
-      ? nextTracks.find((item) => item.type === 'audio' && !item.muted) || makeTrack(nextTracks, 'audio')
-      : track.type === 'video' ? track : nextTracks.find((item) => item.type === 'video') || makeTrack(nextTracks, 'video')
+      ? (track?.type === 'audio' && !track.locked && !track.muted ? track : nextTracks.find((item) => item.type === 'audio' && !item.locked && !item.muted)) || makeTrack(nextTracks, 'audio')
+      : (track?.type === 'video' && !track.locked ? track : nextTracks.find((item) => item.type === 'video' && !item.locked)) || makeTrack(nextTracks, 'video')
     const resolvedSourceDuration = Number(asset.sourceDuration ?? asset.duration) || 0
     const assetDuration = Number(asset.duration) || 0
     // Older imports could store a ten-second placeholder beside the measured
@@ -410,15 +417,22 @@ export const createMediaClips = ({ assets, track, clips, playhead, duration, tra
 }
 
 function makeTrack(tracks, type) {
-  const count = tracks.filter((track) => track.type === type).length + 1
-  const colors = type === 'audio' ? ['cyan', 'blue', 'rose', 'green'] : ['lime', 'rose', 'amber', 'violet']
-  const accent = colors[(count - 1) % colors.length]
-  const track = { id: `${type}-${globalThis.crypto?.randomUUID?.() || Date.now()}`, type, accent, label: type === 'audio' ? `音频轨 ${count}` : `视频轨 ${count}`, order: count - 1, muted: false, locked: false }
+  const definition = trackTypes.find((item) => item.type === type)
+  if (!definition) throw new TypeError(`不支持的轨道类型：${type}`)
+  let count = tracks.filter((track) => track.type === type).length + 1
+  while (tracks.some((track) => track.label === `${definition.prefix} ${count}`)) count += 1
+  const accent = definition.accents[(count - 1) % definition.accents.length]
+  const order = Math.max(tracks.length, ...tracks.map((track) => (Number(track.order) || 0) + 1))
+  const track = { id: `${type}-${globalThis.crypto?.randomUUID?.() || Date.now()}`, type, accent, label: `${definition.prefix} ${count}`, order, muted: false, locked: false }
   tracks.push(track)
   return track
 }
 
-export const addTrack = (tracks, type) => [...tracks, makeTrack(tracks, type)]
+export const addTrack = (tracks, type) => {
+  const nextTracks = [...tracks]
+  makeTrack(nextTracks, type)
+  return nextTracks
+}
 
 export const moveClip = (clips, clipId, start, trackId = null) => {
   const clip = clips.find((item) => item.id === clipId)
@@ -544,6 +558,32 @@ export const removeTrackClips = (clips, trackId) => {
     sourceClips.filter((candidate) => candidate.linkedClipId === parentId).forEach((candidate) => removeIds.add(candidate.id))
   })
   return sourceClips.filter((clip) => !removeIds.has(clip.id))
+}
+
+export const removeTrack = (project, trackId) => {
+  const track = project.tracks.find((item) => item.id === trackId)
+  if (!track || track.locked) return project
+  const clips = removeTrackClips(project.clips, trackId)
+  const retainedIds = new Set(clips.map((clip) => clip.id))
+  const removedClips = project.clips.filter((clip) => !retainedIds.has(clip.id))
+  const lockedTrackIds = new Set(project.tracks.filter((item) => item.locked).map((item) => item.id))
+  if (removedClips.some((clip) => lockedTrackIds.has(clip.trackId))) return project
+
+  const tracks = project.tracks.filter((item) => item.id !== trackId).map((item, order) => ({ ...item, order }))
+  const cueId = (clip) => clip.sourceCueId || clip.assetId
+  const removedCueIds = new Set(removedClips.filter((clip) => clip.kind === 'subtitle').map(cueId))
+  const retainedCueIds = new Set(clips.filter((clip) => clip.kind === 'subtitle').map(cueId))
+  const removedLastSubtitleTrack = track.type === 'subtitle' && !tracks.some((item) => item.type === 'subtitle')
+  const cues = (project.subtitle?.cues || []).filter((cue) => retainedCueIds.has(cue.id)
+    || (!removedCueIds.has(cue.id) && !removedLastSubtitleTrack))
+  return {
+    ...project,
+    tracks,
+    clips,
+    subtitle: cues.length === (project.subtitle?.cues || []).length
+      ? project.subtitle
+      : { ...project.subtitle, cues, text: cues.map((cue) => cue.text).join('\n') },
+  }
 }
 
 export const createSrt = (cues) => cues
