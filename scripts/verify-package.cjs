@@ -11,7 +11,7 @@ async function main() {
   const font = path.join(directory, 'fonts/NotoSansCJKsc-Regular.otf')
   if (await digest(font) !== manifest.font.sha256) throw new Error('包内字体缺失或摘要不匹配。')
   const asar = await import('@electron/asar')
-  for (const entry of ['electron/main.cjs', 'electron/runtime.cjs', 'electron/filesystem.cjs', 'electron/processes.cjs', 'electron/batch/process.cjs', 'electron/batch/manager.cjs', 'dist/index.html']) asar.extractFile(path.join(directory, 'app.asar'), entry)
+  for (const entry of ['electron/main.cjs', 'electron/runtime.cjs', 'electron/filesystem.cjs', 'electron/processes.cjs', 'electron/batch/process.cjs', 'electron/batch/manager.cjs', 'dist/index.html']) asar.extractFile(path.join(directory, 'app.asar'), path.normalize(entry))
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'videome-package-'))
   try {
     const suffix = process.platform === 'win32' ? '.exe' : ''
