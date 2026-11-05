@@ -4,7 +4,7 @@
 
 ## 1. 最新功能与正确性检查
 
-2026-11-05 完整回归 **71 项通过**，Vite 构建、脚本语法和 `git diff --check` 通过；本轮文档更新复核已有日志与报告，没有重新运行批量性能测试。
+2026-11-05 本机完整回归 **72 项通过、1 项 Windows 专用测试跳过**，Windows 云端 **73 项通过**，Mac 云端 **72 项通过、1 项跳过**；Vite 构建、脚本语法和 `git diff --check` 通过。本轮云端打包修复没有重新运行 200 条媒体性能测试。
 
 覆盖：
 
@@ -60,6 +60,6 @@
 - 测试输出仅 640×360，不能代表 1080p/4K 输出或 Windows 软件编码吞吐，也不保证 8 路更快。
 - 只有本机 Mac 已执行上述完整流程；未在另一台没有 Homebrew 的 Mac 上验收。
 - macOS 15 部署目标通过静态检查，macOS 15 实机运行仍待验收。
-- Windows 媒体下载摘要和 PE x64 已检查；Windows CI 构建与 Windows 11/10 人工验收仍待执行。
+- Windows 云端媒体检查、73 项测试、NSIS/Portable 构建与包内转码在[运行 #6](https://github.com/WECENG/videome/actions/runs/41957372222)通过；Windows 11/10 人工验收及真实 200 条性能仍待执行。
 
 完整平台状态见[双平台记录](CROSS-PLATFORM-IMPLEMENTATION-REPORT.md)，待办步骤见[人工验收指南](CROSS-PLATFORM-ACCEPTANCE.md)。

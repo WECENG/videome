@@ -8,10 +8,12 @@ Videome 是一款本地视频剪辑与批量混剪桌面工具，使用 React、
 
 | 平台 | 目标与产物 | 验证状态 |
 | --- | --- | --- |
-| macOS Apple Silicon | macOS 15.0+；`.app`、`.dmg`、App `.zip` | 本机 macOS 26 开发版及安装版已验证；macOS 15 实机待验收 |
-| Windows x64 | NSIS 安装版 `.exe`、Portable 免安装 `.exe` | 适配和手动构建工作流已提供；Windows CI 构建及人工操作待执行 |
+| macOS Apple Silicon | macOS 15.0+；`.app`、`.dmg`、App `.zip` | 本机 macOS 26 开发版及安装版已验证；macOS 15 云端构建与包内检查通过，实机人工验收待完成 |
+| Windows x64 | NSIS 安装版 `.exe`、Portable 免安装 `.exe` | Windows Server 2022 云端 73 项测试、打包及包内转码检查通过；Windows 11/10 人工验收待完成 |
 
 目前交付内部测试包：Mac 使用 ad-hoc 本地签名，未做 Developer ID 签名或公证；Windows 未配置发行签名。Intel Mac、Windows ARM、32 位、商店发布和自动更新不在当前交付范围。具体证据见[双平台实现与验收记录](docs/CROSS-PLATFORM-IMPLEMENTATION-REPORT.md)。
+
+2026-11-05 的[双平台成功构建 #6](https://github.com/WECENG/videome/actions/runs/41957372222)已上传安装包。在运行页的 Artifacts 下载 `Videome-win32-x64-6` 或 `Videome-darwin-arm64-6`（需要登录 GitHub，保留 30 天）。
 
 ## 主要功能
 

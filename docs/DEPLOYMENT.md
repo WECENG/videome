@@ -1,6 +1,6 @@
 # 开发、构建与内部交付
 
-适用版本：`0.1.0 Preview`。核对日期：2026-11-05。本轮目标为 macOS 15.0+ arm64 与 Windows x64。本机已验证 macOS 26 开发和安装包，macOS 15 实机、Windows CI 构建及 Windows 人工操作仍待验收。
+适用版本：`0.1.0 Preview`。核对日期：2026-11-05。本轮目标为 macOS 15.0+ arm64 与 Windows x64。本机已验证 macOS 26 开发和安装包；macOS 15 和 Windows Server 2022 云端测试、构建与包内检查已通过，Windows 11/10 及 macOS 15 实机人工操作仍待验收。
 
 ## 1. 环境与启动
 
@@ -75,7 +75,7 @@ npm run build
 git diff --check
 ```
 
-最近一次本机完整测试为 71 项，通过日期为 2026-11-05；该数字是验收记录，不是固定测试数量。测试覆盖领域、工程保存、会话恢复、跨平台工具、真实媒体、队列及崩溃协调。
+2026-11-05 本机完整测试为 72 项通过、1 项 Windows 专用测试跳过；Windows 云端 73 项全部通过，Mac 云端 72 项通过、1 项跳过。该数字是验收记录，不是固定测试数量。测试覆盖领域、工程保存、会话恢复、跨平台工具、真实媒体、队列及崩溃协调。
 
 需要检查桌面行为时，先启动 `desktop:dev`，再在另一个终端执行：
 
@@ -135,6 +135,8 @@ npm run verify:package -- /absolute/path/to/Resources
 - 失败时上传可用的构建信息与诊断日志。
 
 工作流文件存在不代表已运行。本地未提交/未推送的改动不会参与远程构建。Windows Server runner 结果也不替代 Windows 11/10 的安装、界面、文件关联和真实批量人工验收。
+
+已完成的[运行 #6](https://github.com/WECENG/videome/actions/runs/41957372222)使用提交 `e74d8be`，两平台均成功。Windows Artifact 为 `Videome-win32-x64-6`，包含安装版和 Portable；Mac Artifact 为 `Videome-darwin-arm64-6`。同轮提供独立媒体资源 Artifact。
 
 Windows 媒体 ZIP 明确使用系统 PowerShell 调用 .NET ZIP 接口解压，路径以 UTF-16 编码参数传递。这样可避免 Git Bash `tar` 将 `D:\...` 盘符误判成远程主机，以及系统 `tar` 对中文路径的编码限制。失败时先查看 `Prepare bundled media` 步骤或失败 Artifact 中的 `media-prepare.log`。更新工作流后需重新执行 **Run workflow**，旧运行的 **Re-run jobs** 仍使用旧提交。
 

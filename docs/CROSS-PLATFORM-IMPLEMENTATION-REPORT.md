@@ -2,7 +2,7 @@
 
 记录日期：2026-11-05（Asia/Shanghai）。适用版本：`0.1.0 Preview`。本机为 Apple Silicon / macOS 26，开发 Node.js 24.19.0、Electron 45.1.0，随包 FFmpeg/ffprobe 9.0.2。
 
-本文记录已观察的实现和验收证据，不把工作流配置等同于远程执行。本轮文档整理没有重新运行媒体性能测试。
+本文记录已观察的实现和验收证据，不把工作流配置等同于远程执行。2026-11-05 已完成[云端构建 #6](https://github.com/WECENG/videome/actions/runs/41957372222)，两平台全部成功；未重新运行 200 条媒体性能测试。
 
 ## 1. 交付状态
 
@@ -12,11 +12,14 @@
 | Mac arm64 App、DMG、ZIP | 已构建；安装至 Applications 后验证工程、批量及普通字幕导出 |
 | Mac 媒体兼容性检查 | 102 个工具与动态库均为 arm64，最低系统不高于 15.0，无外部 Homebrew 引用 |
 | macOS 15 实机 / 另一台无 Homebrew 的 Mac | 待人工验收 |
-| Windows 媒体资源 | 9.0.2 压缩包 SHA-256、ffmpeg/ffprobe PE x64 检查通过，没有执行 Windows 程序 |
-| Windows CI 测试与 NSIS/Portable 构建 | 工作流已提供，未在本次本机交付中运行 |
+| macOS 15 云端 | 72 项测试通过、1 项 Windows 专用测试跳过；构建、包内转码、验收材料和上传成功 |
+| Windows 媒体资源 | 9.0.2 压缩包 SHA-256、ffmpeg/ffprobe PE x64、实际执行及编码器/滤镜检查通过 |
+| Windows CI 测试与 NSIS/Portable 构建 | Windows Server 2022 上 73 项测试、两种 EXE、包内中文转码/解码/30 帧检查通过，产物已上传 |
 | Windows 11 / 10 桌面开发、安装与批量 | 待用户人工验收 |
 
-Mac 使用 ad-hoc 本地签名，无 Developer ID 发行签名或公证；Windows 无发行签名。暂不交付 Intel Mac、Windows ARM、32 位和自动更新。代码提交、推送和公开发布不属于本次交付结果。
+Mac 使用 ad-hoc 本地签名，无 Developer ID 发行签名或公证；Windows 无发行签名。暂不交付 Intel Mac、Windows ARM、32 位和自动更新。运行 #6 的源码提交为 `e74d8be`，交付通过 Actions Artifact，未创建公开 Release。
+
+安装包 Artifact 为 `Videome-win32-x64-6`（410,750,652 字节）和 `Videome-darwin-arm64-6`（399,268,703 字节），需登录 GitHub 下载，保留 30 天。首轮失败暴露的盘符解压、中文解压和 ASAR 路径校验问题已修复；恢复测试已等待分析释放资源锁，消除直接修改测试状态造成的竞态。
 
 ## 2. 已实现的模块与行为
 
@@ -31,7 +34,7 @@ Mac 使用 ad-hoc 本地签名，无 Developer ID 发行签名或公证；Window
 
 ## 3. 本机自动与媒体检查
 
-截至本轮工程入口优化，**71 项测试通过**；Vite 生产构建、脚本语法及 `git diff --check` 通过。早期阶段的 60/67 项属于历史测试数量，不代表当前总数。
+本机完整回归 **72 项通过、1 项 Windows 专用测试跳过**；Windows 云端 **73 项通过**，Mac 云端 **72 项通过、1 项跳过**。Vite 生产构建、脚本语法及 `git diff --check` 通过。早期的 60/67/71 项属于历史测试数量。
 
 已验证红蓝画面重排、900 帧、音频偏移与静音补齐、无音轨、VFR、非零时间戳、旋转、HDR 拒绝、硬件回退、签名去重、200 项队列、失败重试、文件冲突和多阶段强退恢复。
 
@@ -65,4 +68,4 @@ Mac 包内检查包含 ASAR 入口与共享模块、字体摘要、媒体架构�
 
 输入、工具链和机器负载不同，不能据此计算性能提升比例或承诺完成时间。详细 1/2/4 路结果、文件大小、内存采样限制和本机原始报告位置统一保存在[批量验收记录](BATCH-MIX-ACCEPTANCE.md)。
 
-后续 Windows 构建后按[人工验收指南](CROSS-PLATFORM-ACCEPTANCE.md)执行并独立填表；未执行项保持待验收。
+下载 Windows 构建后按[人工验收指南](CROSS-PLATFORM-ACCEPTANCE.md)执行并独立填表；安装、桌面界面、文件关联和真实 200 条性能等未执行项保持待验收。
