@@ -70,7 +70,6 @@ import {
   calculateWaveform,
   createMediaClips,
   createSrt,
-  defaultMusic,
   defaultProject,
   exportEstimate,
   fileUrl,
@@ -101,6 +100,7 @@ import {
 } from './domain.js'
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
+import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
 
 const FALLBACK_TOOLS = [
   { name: 'ffmpeg', path: null, version: null },
@@ -143,7 +143,7 @@ function App() {
   const [selectedClipIds, setSelectedClipIds] = useState([])
   const [selectedAssetIds, setSelectedAssetIds] = useState([])
   const [selectedCueId, setSelectedCueId] = useState('caption-1')
-  const [assets, setAssets] = useState(() => loadAssets())
+  const [assets, setAssets] = useState(() => mergeAssetLibraries(loadAssets(), loadProject().assets))
   const [tools, setTools] = useState(FALLBACK_TOOLS)
   const [zoom, setZoom] = useState(1.16)
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(1000)
@@ -164,7 +164,13 @@ function App() {
   const [volumeTarget, setVolumeTarget] = useState(0.22)
   const transportAudio = useRef(null)
   const [saving, setSaving] = useState(false)
-  const [projectPath, setProjectPath] = useState(null)
+  const [projectPath, setProjectPath] = useState(() => readProjectSession(localStorage).path)
+  const [showProjectMenu, setShowProjectMenu] = useState(false)
+  const [showProjectLocation, setShowProjectLocation] = useState(false)
+  const [storageLocations, setStorageLocations] = useState(null)
+  const [previousProject, setPreviousProject] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('videome-previous-project')) } catch { return null }
+  })
   const [editHistory, setEditHistory] = useState([])
   const [editFuture, setEditFuture] = useState([])
   const [subtitleGenerated, setSubtitleGenerated] = useState(false)
@@ -172,7 +178,7 @@ function App() {
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [showExport, setShowExport] = useState(false)
   const [showBatchMix, setShowBatchMix] = useState(false)
-  const [musicFiles, setMusicFiles] = useState(defaultMusic)
+  const [musicFiles, setMusicFiles] = useState([])
   const [recordingMusic, setRecordingMusic] = useState(null)
   const [previewSeeking, setPreviewSeeking] = useState(false)
   const [previewErrorClipId, setPreviewErrorClipId] = useState(null)
@@ -199,7 +205,9 @@ function App() {
   const activeTimelineAudioSignatureRef = useRef(null)
   const autosaveRef = useRef(null)
   const projectRef = useRef(project)
+  const projectPathRef = useRef(projectPath)
   const projectEpochRef = useRef(0)
+  const projectIdentityRef = useRef(0)
   const selectedClipIdsRef = useRef([])
   const selectedAssetIdsRef = useRef([])
   const assetPointerSelectionRef = useRef(null)
@@ -208,10 +216,12 @@ function App() {
   const suppressTimelineClickRef = useRef(null)
   const savePromiseRef = useRef(Promise.resolve())
   const manualSaveInProgressRef = useRef(false)
+  const projectMenuRef = useRef(null)
 
   useEffect(() => {
     projectRef.current = project
-  }, [project])
+    projectPathRef.current = projectPath
+  }, [project, projectPath])
 
   useEffect(() => {
     if (!window.videome?.onOpenProjectFile) return undefined
@@ -252,7 +262,7 @@ function App() {
   const selectedAsset = useMemo(() => project.assets.find((asset) => asset.id === selectedClip?.assetId) || null, [project.assets, selectedClip])
   const activeTrack = useMemo(() => project.tracks.find((track) => track.id === activeTrackId) || project.tracks.find((track) => track.type === 'video') || project.tracks[0], [project.tracks, activeTrackId])
   const selectedSubtitle = useMemo(() => safeSubtitle.cues.find((cue) => project.playhead >= cue.start && project.playhead <= cue.end), [safeSubtitle.cues, project.playhead])
-  const savedAt = project.savedAt
+  const exampleMode = isExampleProject(project)
   const filteredAssets = assets.filter((asset) => `${asset.name} ${asset.kind} ${asset.codec || ''}`.toLowerCase().includes(search.toLowerCase()))
     const suggestions = generateSuggestions(musicFiles, { mood, tempo, duration })
   const exportSnapshot = useMemo(() => project, [project])
@@ -340,8 +350,7 @@ function App() {
         .catch(() => {})
     }
 
-    const storedPath = sessionStorage.getItem('videome-project-path')
-    if (storedPath) setProjectPath(storedPath)
+    window.videome?.getStorageLocations?.().then((locations) => { if (mounted) setStorageLocations(locations) }).catch(() => {})
 
     const dispose = window.videome?.onExportProgress
       ? window.videome.onExportProgress((nextProgress) => setProgress(nextProgress))
@@ -363,6 +372,32 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!showProjectMenu) return undefined
+    const dismiss = (event) => { if (!projectMenuRef.current?.contains(event.target)) setShowProjectMenu(false) }
+    const escape = (event) => { if (event.key === 'Escape') setShowProjectMenu(false) }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', escape)
+    return () => { document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', escape) }
+  }, [showProjectMenu])
+
+  useEffect(() => {
+    if (!showProjectLocation) return undefined
+    const escape = (event) => { if (event.key === 'Escape') setShowProjectLocation(false) }
+    document.addEventListener('keydown', escape)
+    return () => document.removeEventListener('keydown', escape)
+  }, [showProjectLocation])
+
+  useEffect(() => {
+    const audioAssets = assets.filter((asset) => asset.kind === 'audio')
+    setMusicFiles((current) => audioAssets.map((asset) => ({
+      id: asset.id, name: asset.name, artist: '本地导入',
+      mood: 'versatile', tempo: 'flexible', genre: '本地音乐', license: null, volume: 0.22,
+      ...current.find((music) => music.id === asset.id),
+      sourcePath: asset.path, previewUrl: asset.previewUrl, duration: asset.duration || 0,
+    })))
+  }, [assets])
+
+  useEffect(() => {
     document.title = `${project.name || 'Videome'} — Videome Studio`
     return () => { document.title = 'Videome — Video Atelier' }
   }, [project.name])
@@ -381,7 +416,13 @@ function App() {
 
       if (mod && key === 's') {
         event.preventDefault()
-        void saveProject()
+        void saveProject({ saveAs: event.shiftKey })
+      } else if (mod && key === 'n') {
+        event.preventDefault()
+        void createEmptyProject()
+      } else if (mod && key === 'o') {
+        event.preventDefault()
+        void openProject()
       } else if (mod && key === 'z' && event.shiftKey) {
         event.preventDefault()
         handleRedo()
@@ -416,19 +457,32 @@ function App() {
   }, [selectedId, project, duration, projectPath, activeTrackId])
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        writeProjectSession(localStorage, project, projectPath)
+        localStorage.setItem('videome-assets', JSON.stringify(assets))
+      } catch { setStatus('本地恢复缓存写入失败，请保存工程文件。', 'error') }
+    }, 500)
+    return () => window.clearTimeout(timer)
+  }, [project, projectPath, assets])
+
+  useEffect(() => {
     if (autosaveRef.current) window.clearInterval(autosaveRef.current)
     if (project.assets.length || project.clips.some((clip) => !clip.id.startsWith('sample-'))) {
       autosaveRef.current = window.setInterval(() => {
         if (manualSaveInProgressRef.current) return
         const currentProject = projectRef.current
         const projectSnapshot = { ...currentProject, autosavedAt: new Date().toISOString() }
+        const identity = projectIdentityRef.current
         try {
           const writablePath = projectPath && projectPathMatchesName(projectPath, currentProject.name) ? projectPath : null
           savePromiseRef.current = savePromiseRef.current
             .catch(() => null)
             .then(async () => {
+              if (projectIdentityRef.current !== identity) return
               localStorage.setItem('videome-autosave', JSON.stringify(projectSnapshot))
               localStorage.setItem('videome-assets', JSON.stringify(currentProject.assets))
+              writeProjectSession(localStorage, projectSnapshot, projectPath)
               if (writablePath && window.videome?.saveProjectFile) {
                 await window.videome.saveProjectFile({ project: projectSnapshot, path: writablePath })
               }
@@ -456,26 +510,6 @@ function App() {
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     }
   }, [])
-
-  useEffect(() => {
-    if (activePanel === '音乐库' && musicFiles.length === defaultMusic.length && assets.some((asset) => asset.kind === 'audio')) {
-      const localMusic = assets.filter((asset) => asset.kind === 'audio' && !musicFiles.some((music) => music.id === asset.id)).map((asset) => ({
-        id: asset.id,
-        name: asset.name.replace(/\.[^.]+$/, ''),
-        artist: '本地曲库',
-        duration: asset.duration,
-        mood: 'versatile',
-        tempo: 'flexible',
-        genre: '本地导入 · 待标注',
-        bpm: 0,
-        license: null,
-        type: 'local',
-        sourcePath: asset.path,
-        volume: 0.22,
-      }))
-      if (localMusic.length) setMusicFiles((current) => [...current, ...localMusic])
-    }
-  }, [activePanel, assets, musicFiles.length])
 
   function setStatus(text, kind = 'success') {
     setMessage(text)
@@ -844,7 +878,7 @@ function App() {
           setActivePanel('属性检查器')
           setStatus(`已添加 ${result.inserted.length} 个片段到「${focused.kind === 'audio' ? '音频轨' : focused.kind === 'image' ? '图文轨' : '视频轨'}」。`)
         }
-      } else if (project.clips.every((clip) => clip.id.startsWith('sample-'))) {
+      } else if (isExampleProject(project)) {
         setProject((current) => ({ ...current, clips: current.clips.filter((clip) => !clip.id.startsWith('sample-')) }))
         setStatus('真实素材已导入。示例时间轴仅用于预览，按住素材后拖入时间轴开始制作。', 'info')
       } else {
@@ -926,7 +960,7 @@ function App() {
     event.target.value = ''
   }
 
-  async function saveProject() {
+  async function saveProject({ saveAs = false } = {}) {
     if (saving) return savePromiseRef.current
     manualSaveInProgressRef.current = true
     await savePromiseRef.current.catch(() => null)
@@ -945,6 +979,7 @@ function App() {
       setStatus('无法写入本地恢复缓存；工程文件保存仍会继续。', 'info')
     }
     const saveEpoch = projectEpochRef.current
+    const saveIdentity = projectIdentityRef.current
     const checkpointSignature = JSON.stringify(checkpoint)
 
     if (!window.videome?.saveProject && !window.videome?.saveProjectFile) {
@@ -963,20 +998,22 @@ function App() {
 
     setSaving(true)
     try {
-      const writablePath = projectPath && projectPathMatchesName(projectPath, checkpoint.name) ? projectPath : null
+      const writablePath = !saveAs && projectPath && projectPathMatchesName(projectPath, checkpoint.name) ? projectPath : null
       const write = () => writablePath && window.videome?.saveProjectFile
         ? window.videome.saveProjectFile({ project: checkpoint, path: writablePath })
         : window.videome.saveProject({ project: checkpoint, defaultDirectory: projectPath ? pathDirname(projectPath) : null })
       savePromiseRef.current = savePromiseRef.current.catch(() => null).then(write)
       const result = await savePromiseRef.current
       if (!result?.path) return
+      if (projectIdentityRef.current !== saveIdentity) return result
+      projectPathRef.current = result.path
       setProjectPath(result.path)
-      sessionStorage.setItem('videome-project-path', result.path)
+      writeProjectSession(localStorage, projectRef.current, result.path)
       if (projectEpochRef.current === saveEpoch && JSON.stringify(normalizeProjectForPersistence(projectRef.current)) === checkpointSignature) {
         projectRef.current = { ...projectRef.current, savedAt: checkpoint.savedAt }
         setProject((current) => ({ ...current, savedAt: checkpoint.savedAt }))
       }
-      setStatus(`工程已保存：${result.path.split(/[\\/]/).pop()}`)
+      setStatus(`工程已保存：${result.path}`)
       return result
     } catch (error) {
       setStatus(`工程保存失败：${error.message}`, 'error')
@@ -987,14 +1024,9 @@ function App() {
   }
 
   async function openProject() {
+    setShowProjectMenu(false)
     if (!window.videome?.openProject) {
-      const saved = localStorage.getItem('videome-project') || localStorage.getItem('videome-autosave')
-      if (!saved) {
-        setStatus('浏览器模式中尚无可恢复的本地项目。', 'info')
-        return
-      }
-      loadOpenedProject(hydrateProject(JSON.parse(saved)), null)
-      setStatus('已从本地恢复项目。')
+      setStatus('打开 .videome 文件请使用桌面版；当前修改会保存在此浏览器的恢复缓存中。', 'info')
       return
     }
 
@@ -1002,11 +1034,13 @@ function App() {
       const result = await window.videome.openProject()
       if (!result) return
       const openedData = hydrateProject(result.data)
-      loadOpenedProject(openedData, result.path)
+      if (!loadOpenedProject(openedData, result.path)) return
       setStatus('工程已打开；正在检查源素材路径。')
       const missing = openedData.assets.filter((asset) => asset.path && !asset.previewUrl)
       if (missing.length) {
+        const identity = projectIdentityRef.current
         const diagnostics = await window.videome.probeMedia(missing.map((asset) => asset.path))
+        if (projectIdentityRef.current !== identity) return
         const byPath = new Map(diagnostics.map((entry) => [entry.path, entry]))
         const recovered = openedData.assets.map((asset) => {
           const item = byPath.get(asset.path)
@@ -1025,41 +1059,62 @@ function App() {
   }
 
   function loadOpenedProject(data, path) {
+    if (!preserveCurrentProject()) return false
     const migrated = hydrateProject(data)
     const fileName = pathBasename(path).replace(/\.videome$/i, '')
     const storedName = typeof data?.name === 'string' ? data.name.trim() : ''
     if ((!storedName || storedName === '未命名项目') && fileName) migrated.name = fileName
     const libraryAssets = mergeAssetLibraries(loadAssets(), assets, migrated.assets)
     const openedProject = { ...migrated, assets: migrated.assets }
+    try { writeProjectSession(localStorage, openedProject, path) }
+    catch { setStatus('无法保存工程切换状态，请先释放本机存储空间。', 'error'); return false }
     projectEpochRef.current += 1
+    projectIdentityRef.current += 1
     projectRef.current = openedProject
+    projectPathRef.current = path
     setProject(openedProject)
     setAssets(libraryAssets)
     setProjectPath(path)
     updateSelectedAssetIds([])
     updateSelectedClipIds([])
-    if (path) sessionStorage.setItem('videome-project-path', path)
+    setPlaying(false)
+    setShowProjectMenu(false)
+    setShowProjectLocation(false)
     setEditHistory([])
     setEditFuture([])
     setSelectedId(migrated.clips[0]?.id || null)
+    return true
   }
 
   function createEmptyProject() {
-    const name = window.prompt('为你的新项目命名', '未命名剪辑')
-    if (name == null) return
     const libraryAssets = mergeAssetLibraries(projectRef.current.assets, assets, loadAssets())
-    const emptyProject = { ...defaultProject, name, assets: libraryAssets, clips: [], tracks: defaultProject.tracks.map((track) => ({ ...track })), duration: 60, playhead: 0, subtitle: { ...defaultProject.subtitle, cues: [] } }
-    setProject(emptyProject)
-    setAssets(libraryAssets)
-    updateSelectedAssetIds([])
-    safeStorageWrite('videome-assets', libraryAssets)
-    setSelectedId(null)
-    updateSelectedClipIds([])
-    setProjectPath(null)
-    setEditHistory([])
-    setEditFuture([])
-    sessionStorage.removeItem('videome-project-path')
-    setStatus(`「${name}」已建立空白工程；素材库内容已保留。导入素材后即可开始剪辑。`)
+    if (!loadOpenedProject(createBlankProject(defaultProject.name, libraryAssets), null)) return
+    setActivePanel('素材库')
+    setActiveTab('edit')
+    setSearch('')
+    setStatus('已新建空白工程，素材库已保留。可在项目菜单恢复切换前的工程。')
+  }
+
+  function preserveCurrentProject() {
+    const snapshot = { project: normalizeProjectForPersistence(projectRef.current), path: projectPathRef.current, capturedAt: new Date().toISOString() }
+    if (!safeStorageWrite('videome-previous-project', snapshot)) {
+      setStatus('无法保存切换前的工程，请先手动保存。', 'error')
+      return false
+    }
+    setPreviousProject(snapshot)
+    return true
+  }
+
+  async function revealProject() {
+    if (!projectPath || !window.videome?.showProjectInFolder) return
+    const result = await window.videome.showProjectInFolder(projectPath)
+    if (!result?.ok) setStatus(result?.reason || '无法定位工程文件。', 'error')
+  }
+
+  function restorePreviousProject() {
+    if (!previousProject?.project) return
+    if (!loadOpenedProject(previousProject.project, previousProject.path)) return
+    setStatus('已恢复切换前的工程。')
   }
 
   function setExportValue(key, value) {
@@ -1290,10 +1345,13 @@ function App() {
   async function addMusicFiles() {
     const imported = await importPathsFromAudioPicker()
     if (imported?.length) {
-      const music = imported.map((asset) => ({ id: asset.id, name: asset.name.replace(/\.[^.]+$/, ''), artist: '本地曲库', duration: asset.duration, mood: 'versatile', tempo: 'flexible', genre: '本地导入 · 待标注', bpm: 0, license: null, type: 'local', sourcePath: asset.path, volume: 0.22 }))
-      setMusicFiles((current) => [...current, ...music])
       setActivePanel('音乐库')
     }
+  }
+
+  function saveMusicLicense(music) {
+    if (!music) return
+    setMusicFiles((current) => current.map((item) => item.id === music.id ? { ...item, license: item.license ? null : '用户已确认使用许可' } : item))
   }
 
   async function importPathsFromAudioPicker() {
@@ -2101,14 +2159,14 @@ function App() {
   }
 
   const previewRatio = project.frameSize.width / project.frameSize.height
-  const historyNote = project.autosavedAt ? `本地缓存 ${timeAgo(project.autosavedAt)}` : '自动保存已开启'
+  const historyNote = projectPath ? '已关联工程文件 · 自动保存' : '本机恢复缓存 · 尚未保存工程文件'
 
   function renderHeader() {
     return (
       <header className="topbar">
         <div className="topbar-brand"><div className="brand-mark"><Clapperboard size={16} strokeWidth={2.1} /><i /></div><span>videome<span className="brand-atelier"> atelier</span></span></div>
-        <div className="breadcrumb"><button className="crumb-root" onClick={openProject}><FolderOpen size={13} />项目<span>/</span></button><label className="project-title-input"><input ref={projectNameInputRef} value={project.name} aria-label="项目名称" onChange={(event) => { const name = event.target.value; projectRef.current = { ...projectRef.current, name }; updateProject({ name }) }} onBlur={(event) => updateProjectName(event.target.value)} /><ChevronDown size={11} /></label><span className="project-unsaved">{saving ? '保存中…' : savedAt ? `已保存 ${timeAgo(savedAt)}` : '自动保存'}</span></div>
-        <div className="topbar-actions"><span className="cloud-status"><CloudOff size={12} /><span>本地项目</span></span><button className="icon-button undo-button" aria-label="撤销" title="撤销 · ⌘Z" disabled={!editHistory.length} onClick={handleUndo}><Undo2 size={16} /></button><button className="icon-button undo-button" aria-label="重做" title="重做 · ⌘⇧Z" disabled={!editFuture.length} onClick={handleRedo}><Redo2 size={16} /></button><span className="topbar-divider" /><button className="topbar-save" onClick={saveProject}><span>保存</span><kbd>⌘ S</kbd></button><button className="export-button" onClick={() => setShowExport(true)}><Download size={14} /><span>导出成片</span><ChevronDown size={13} /></button></div>
+        <div className="breadcrumb"><div className="project-menu-anchor" ref={projectMenuRef}><button className="crumb-root" aria-label="项目菜单" aria-expanded={showProjectMenu} aria-haspopup="menu" onClick={() => setShowProjectMenu((current) => !current)}><FolderOpen size={13} />项目<ChevronDown size={11} /></button>{renderNewProjectMenu()}</div><label className="project-title-input"><input ref={projectNameInputRef} value={project.name} aria-label="项目名称" onChange={(event) => { const name = event.target.value; projectRef.current = { ...projectRef.current, name }; updateProject({ name }) }} onBlur={(event) => updateProjectName(event.target.value)} /></label><button className="project-location-trigger" aria-label="工程位置" title={projectPath || '尚未保存为工程文件，点击选择保存位置'} onClick={() => setShowProjectLocation(true)}><span className={projectPath ? 'location-dot saved' : 'location-dot'} />{saving ? '保存中…' : projectPath ? '工程位置' : '尚未保存'}</button>{exampleMode && <span className="example-badge">界面示例 · 无源文件</span>}</div>
+        <div className="topbar-actions"><button className="icon-button undo-button" aria-label="撤销" title="撤销 · ⌘Z" disabled={!editHistory.length} onClick={handleUndo}><Undo2 size={16} /></button><button className="icon-button undo-button" aria-label="重做" title="重做 · ⌘⇧Z" disabled={!editFuture.length} onClick={handleRedo}><Redo2 size={16} /></button><span className="topbar-divider" /><button className="topbar-save" onClick={() => void saveProject()}><span>保存</span><kbd>⌘ S</kbd></button><button className="export-button" onClick={() => setShowExport(true)}><Download size={14} /><span>导出成片</span><ChevronDown size={13} /></button></div>
         <button className="batch-launch" onClick={() => setShowBatchMix(true)}><Scissors size={14} />批量混剪</button>
       </header>
     )
@@ -2117,7 +2175,7 @@ function App() {
   function renderLeftRail() {
     return (
       <aside className="left-rail" aria-label="项目面板">
-        <div className="rail-top"><span className="rail-eyebrow">WORKSPACE</span><button className="rail-user" aria-label="本地工作区" title="本地工作区"><span>V</span><i /></button></div>
+        <div className="rail-top"><button className="rail-user" aria-label="工程位置与本地文件" title="工程位置与本地文件" onClick={() => setShowProjectLocation(true)}><FolderOpen size={16} /></button></div>
         <div className="rail-section"><span className="rail-label">制作</span><button className={`rail-icon ${activePanel === '素材库' ? 'rail-active' : ''}`} title="素材库" aria-label="素材库" onClick={() => { setActivePanel('素材库'); setActiveTab('edit') }}><Grid3X3 size={18} /></button><button className={`rail-icon ${activePanel === '音乐库' ? 'rail-active' : ''}`} title="音乐库" aria-label="音乐库" onClick={() => { setActivePanel('音乐库'); setActiveTab('music') }}><Music2 size={18} /></button><button className={`rail-icon ${activePanel === '属性检查器' ? 'rail-active' : ''}`} title="属性" aria-label="属性" onClick={() => { setActivePanel('属性检查器'); setActiveTab('edit') }}><Settings2 size={18} /></button></div>
         <div className="rail-bottom"><span className="rail-cpu"><i />OFFLINE</span><button className="rail-icon" title="首选项" aria-label="首选项" onClick={() => { setActiveTab('settings'); setActivePanel('属性检查器') }}><Settings2 size={16} /></button><span className="rail-version">v0.1 preview</span></div>
       </aside>
@@ -2128,13 +2186,13 @@ function App() {
     return (
       <section className="asset-panel" aria-label="素材库">
         <div className="panel-header"><div><span className="eyebrow">ASSET LIBRARY</span><h2>素材库</h2></div><button className="icon-button compact" aria-label="导入素材" title="导入素材" onClick={() => openPicker()}><Plus size={16} /></button></div>
-        <div className="library-tabs"><button className={activePanel === '素材库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('素材库')}>全部素材<span>{assets.length}</span></button><button className={activePanel === '音乐库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('音乐库')}>我的曲库<span>{musicFiles.length}</span></button></div>
-        {activePanel === '素材库' ? (
+        <div className="library-tabs"><button className={activePanel !== '音乐库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('素材库')}>全部素材<span>{assets.length}</span></button><button className={activePanel === '音乐库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('音乐库')}>我的曲库<span>{musicFiles.length}</span></button></div>
+        {activePanel !== '音乐库' ? (
           <>
             <div className="library-search"><Search size={14} /><input placeholder="搜索素材名称..." value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索素材" /><kbd>⌘ K</kbd></div>
             <button className="import-dropzone" onClick={() => openPicker()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const paths = [...(event.dataTransfer.files || [])]; if (paths.length) handleBrowserFiles({ target: { files: paths, dataset: {}, value: '' } }) }}><span className="drop-icon"><Plus size={16} /></span><span>拖入文件或 <b>选择素材</b></span><small>视频 · 音频 · 图片</small></button>
-            <div className="asset-filter-row"><span>素材 <b>{filteredAssets.length || '04'}</b></span><button className="asset-batch-add" type="button" disabled={!selectedAssetIds.length} aria-label="按选中顺序加入轨道" title={selectedAssetIds.length ? `按选中顺序加入 ${selectedAssetIds.length} 个片段` : '先选择素材'} onClick={() => { setAssetMenuId(null); void addSelectedAssetsToTimeline() }}><Plus size={12} />加入轨道{selectedAssetIds.length ? <b>{selectedAssetIds.length}</b> : null}</button><button className="asset-sort-button" onClick={() => setStatus(`${assets.length} 个本地素材；源文件仅在你主动使用时读取。`, 'info')}>最近添加 <ChevronDown size={11} /></button></div>
-            <div className="asset-list">{filteredAssets.map((asset, index) => renderMediaAsset(asset, index))}{!filteredAssets.length && assets.length > 0 ? <div className="empty-library">没有找到匹配的素材。</div> : null}</div>
+            <div className="asset-filter-row"><span>素材 <b>{filteredAssets.length}</b></span><button className="asset-batch-add" type="button" disabled={!selectedAssetIds.length} aria-label="按选中顺序加入轨道" title={selectedAssetIds.length ? `按选中顺序加入 ${selectedAssetIds.length} 个片段` : '先选择素材'} onClick={() => { setAssetMenuId(null); void addSelectedAssetsToTimeline() }}><Plus size={12} />加入轨道{selectedAssetIds.length ? <b>{selectedAssetIds.length}</b> : null}</button><button className="asset-sort-button" onClick={() => setStatus(`${assets.length} 个本地素材；源文件仅在你主动使用时读取。`, 'info')}>最近添加 <ChevronDown size={11} /></button></div>
+            <div className="asset-list">{filteredAssets.map((asset, index) => renderMediaAsset(asset, index))}{!filteredAssets.length ? <div className="empty-library">{assets.length ? '没有找到匹配的素材。' : exampleMode ? '示例只有时间线布局，未附带视频或音乐文件。' : '尚未导入素材。导入后可双击或拖入时间线。'}</div> : null}</div>
             <div className="storage-card"><div className="storage-icon"><HardDiskIcon /></div><div className="storage-copy"><span>本地空间</span><small>素材不会上传至服务器</small></div><span className="storage-tag">LOCAL</span></div>
           </>
         ) : renderMusicLibrary()}
@@ -2157,7 +2215,7 @@ function App() {
   }
 
   function renderMusicLibrary() {
-    return <div className="music-library-panel"><div className="music-library-intro"><div className="music-mini-icon"><Music2 size={18} /></div><p>只匹配你自己的授权音乐。曲库分析和推荐完全在本机进行。</p><span><CloudOff size={12} /> 未上传素材</span></div><label className="music-search"><Search size={14} /><input placeholder="搜索曲目 · 风格 · BPM" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索曲库" /></label>{musicFiles.filter((music) => `${music.name} ${music.artist} ${music.genre}`.toLowerCase().includes(search.toLowerCase())).map((music, index) => <div className="music-library-card" key={music.id}><button className="library-play" aria-label={`${recordingMusic === music.id ? '停止' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={14} /> : <Play size={14} fill="currentColor" />}</button><div className="music-library-card-copy"><b>{music.name}</b><span>{music.genre} · {music.bpm ? `${music.bpm} BPM` : '节奏待分析'}</span></div><div className="license-mark" title={music.license || '尚未确认使用许可'} style={{ color: music.license ? '#72ad81' : '#cf9367' }}>{music.license ? <BadgeCheck size={15} /> : <Info size={14} />}</div><button className="mini-add" aria-label={`使用 ${music.name}`} onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}<button className="library-add-music" onClick={addMusicFiles}><Plus size={14} />导入已授权的音乐文件</button></div>
+    return <div className="music-library-panel"><div className="music-library-intro"><div className="music-mini-icon"><Music2 size={18} /></div><p>只匹配你自己的授权音乐。曲库分析和推荐完全在本机进行。</p><span><CloudOff size={12} /> 未上传素材</span></div><label className="music-search"><Search size={14} /><input placeholder="搜索曲目 · 风格 · BPM" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索曲库" /></label>{musicFiles.filter((music) => `${music.name} ${music.artist} ${music.genre}`.toLowerCase().includes(search.toLowerCase())).map((music, index) => <div className="music-library-card" key={music.id}><button className="library-play" aria-label={`${recordingMusic === music.id ? '停止' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={14} /> : <Play size={14} fill="currentColor" />}</button><div className="music-library-card-copy"><b>{music.name}</b><span>{music.genre} · {music.bpm ? `${music.bpm} BPM` : '节奏待分析'}</span></div><div className="license-mark" title={music.license || '尚未确认使用许可'} style={{ color: music.license ? '#72ad81' : '#cf9367' }}>{music.license ? <BadgeCheck size={15} /> : <Info size={14} />}</div><button className="mini-add" aria-label={`使用 ${music.name}`} onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}{!musicFiles.length && <div className="empty-library">曲库为空，导入自己的音频文件后即可试听和配乐。</div>}<button className="library-add-music" onClick={addMusicFiles}><Plus size={14} />导入已授权的音乐文件</button></div>
   }
 
   function renderEditorToolbar() {
@@ -2211,17 +2269,17 @@ function App() {
             <div className={`frame-cinema-overlay ${finalLive && previewErrorClipId !== dominantClip?.id ? 'muted-overlay' : ''}`} aria-hidden="true"><span /><span /><span /><i /><b /></div>
             {finalLive && finalPreviewAsset?.kind === 'video' && previewErrorClipId !== dominantClip?.id ? <div className="preview-frame-guide" aria-hidden="true"><i /><i /><i /><i /><span className="guide-crosshair crosshair-x" /><span className="guide-crosshair crosshair-y" /></div> : null}
             {finalLive && finalPreviewAsset?.kind === 'video' && <span className="preview-live-badge"><span />本地原片 · 即时预览</span>}
-            {(!dominantClip || !finalLive) && <div className="preview-gap-state"><span>{dominantClip ? '无法显示此片段' : '无画面片段'}</span><small>{dominantClip ? '源素材缺失或无法读取' : playing ? '播放指针位于片段空隙' : '此处没有可显示的视频或图片'}</small></div>}
+            {project.clips.length > 0 && (!dominantClip || !finalLive) && !exampleMode && <div className="preview-gap-state"><span>{dominantClip ? '无法显示此片段' : '无画面片段'}</span><small>{dominantClip ? '源素材缺失或无法读取' : playing ? '播放指针位于片段空隙' : '此处没有可显示的视频或图片'}</small></div>}
             {previewSeeking && finalLive && !playing ? <span className="preview-seeking">正在定位画面…</span> : null}
             {!finalLive && !project.clips.length && <div className="preview-placeholder"><div className="preview-placeholder-orbit orbit-one" /><div className="preview-placeholder-orbit orbit-two" /><div className="preview-placeholder-center"><span>PLAYGROUND <i>01</i></span><Aperture size={46} strokeWidth={0.75} /><b>创作，由此开始</b><small>导入素材，搭建你的第一条时间线</small><button onClick={() => openPicker({ addToTimeline: true })}><Plus size={14} />导入第一个素材</button></div></div>}
-            {!finalLive && project.clips.length > 0 && !project.assets.some((asset) => asset.path && !asset.missing) && <div className="illustration-title"><span className="project-overline">A SHORT FILM · 2026</span><span className="title-rule" /><span className="display-title">coastline<br /><i>stories</i></span><span className="display-caption">把目光交给海，把时间留给风</span><span className="project-edition">NO. 07 &nbsp; / &nbsp; EASTERN COAST</span></div>}
+            {!finalLive && exampleMode && <div className="illustration-title"><span className="project-overline">界面示例 · 未附带源文件</span><span className="title-rule" /><span className="display-title">coastline<br /><i>stories</i></span><span className="display-caption">这些片段仅展示时间线布局，无法播放或导出</span><button className="example-start-button" onClick={createEmptyProject}><Plus size={13} />新建空白工程</button><span className="project-edition">NO. 07 &nbsp; / &nbsp; EASTERN COAST</span></div>}
             {currentCaption && <div className="preview-subtitle">{currentCaption}</div>}
             {previewProxyClipId === dominantClip?.id ? <div className="preview-unavailable"><LoaderCircle size={14} className="loading-spin" />正在创建本地兼容预览…</div> : previewErrorClipId === dominantClip?.id ? <div className="preview-unavailable"><Info size={14} />{previewErrorMessage || '预览失败，但未能获取具体错误信息。'}</div> : null}
             <div className="preview-safe-margin" aria-hidden="true" />
           </div>
         </div>
         <div className="transport-row"><button className="transport-side" title="上一剪辑点" onClick={() => { const previous = [...project.clips].filter((clip) => clip.start < project.playhead).sort((a, b) => b.start - a.start)[0]; setPlayhead(previous?.start || 0) }}><ChevronLeft size={14} /></button><button className="transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={13} /></button><button className="play-button" onClick={togglePlayback} aria-label={playing ? '暂停' : '播放'}>{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><button className="transport-step next" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={13} /></button><button className="transport-side" title="下一剪辑点" onClick={() => { const next = [...project.clips].filter((clip) => clip.start > project.playhead).sort((a, b) => a.start - b.start)[0]; setPlayhead(next?.start || duration) }}><ChevronRight size={14} /></button><div className="timecode">{timestamp}<span className="timecode-separator">:</span><span className="frame-code">{String(Math.round((project.playhead % 1) * 30).toString().padStart(2, '0'))}</span></div><span className="transport-ratio">01.00 ×</span><button className="icon-button" title="原画预览" onClick={() => setStatus('播放性能：代理模式已就绪，代理将在后续阶段生成。', 'info')}><Gauge size={13} /></button></div>
-        <div className="preview-footer"><span><span className="footer-rec" /><b>PREVIEW</b><i>·</i>{finalLive && finalPreviewAsset?.width ? `${finalPreviewAsset.width} × ${finalPreviewAsset.height}` : project.profile}</span><span><span className="preview-fps">30</span> FPS <i>·</i>{finalLive ? '单素材原片' : '示例预览'}<i>·</i>SDR</span></div>
+        <div className="preview-footer"><span><span className="footer-rec" /><b>PREVIEW</b><i>·</i>{finalLive && finalPreviewAsset?.width ? `${finalPreviewAsset.width} × ${finalPreviewAsset.height}` : project.profile}</span><span><span className="preview-fps">30</span> FPS <i>·</i>{finalLive ? '时间线预览' : exampleMode ? '界面示例 · 无源文件' : project.clips.length ? '无可用画面' : '等待导入素材'}<i>·</i>SDR</span></div>
       </div>
     )
   }
@@ -2265,7 +2323,7 @@ function App() {
   }
 
   function renderMusicInspector() {
-    return <div className="inspector-scroll music-inspector-scroll"><div className="music-match-card"><div className="match-card-ribbon"><Sparkles size={13} />LOCAL SOUND MATCHER</div><h3>给故事找到<br /><i>合适的声音。</i></h3><p>曲库筛选、情绪标签与匹配分数均在本机计算。未连接在线服务，不上传视频或素材。</p><div className="match-local-mark"><LockKeyhole size={12} />PRIVATE BY DEFAULT <span>·</span> AUDIO RIGHTS MATTER</div></div><div className="inspector-section music-preferences"><div className="section-heading-row"><div><span className="section-kicker">01 / STORY FEEL</span><span className="subsection-title">项目氛围</span></div><span className="offline-badge"><span />本地</span></div><span className="mood-choice-label">节奏与情绪</span><div className="mood-chips">{[['sunny', '晴朗', '☼'], ['calm', '舒缓', '↗'], ['dreamy', '朦胧', '◌'], ['energetic', '轻快', '↗']].map(([id, label, icon]) => <button className={mood === id ? 'mood-chip mood-selected' : 'mood-chip'} key={id} onClick={() => setMood(id)}><i>{icon}</i>{label}</button>)}</div><div className="mini-field-row"><span>剪辑节奏</span><select className="inline-select" value={tempo} onChange={(event) => setTempo(event.target.value)}><option value="slow">慢 · 余韵镜头</option><option value="mid">中 · 自然节奏</option><option value="fast">快 · 密集转场</option></select></div><div className="mini-field-row"><span>音乐响度</span><div className="mix-volume"><input aria-label="背景音乐响度" type="range" min="0.05" max="0.6" step="0.01" value={volumeTarget} onChange={(event) => { const next = Number(event.target.value); setVolumeTarget(next); if (selectedClip?.isMusic) setClipVolume(selectedClip.id, next) }} /><span>{Math.round(volumeTarget * 100)}%</span></div></div><div className="ducking-summary"><Headphones size={13} /><span>人声出现时自动压低音乐</span><span className="check-tick"><Check size={11} /></span></div></div><div className="inspector-section matches-section"><div className="section-heading-row"><div><span className="section-kicker">02 / MATCHES</span><span className="subsection-title">为这支影片推荐</span></div><button className="rerun-button" onClick={() => setStatus('推荐已按影片氛围、本机曲库和时长重新排序。', 'info')}><RotateCw size={12} />重新分析</button></div>{musicFiles.length <= defaultMusic.length && <div className="rights-warning"><Info size={12} /><span>请先导入已获授权的本地音乐；示例推荐仅用于展示标签与排序。</span></div>}{suggestions.map((music, index) => <div className={`recommended-track ${index === 0 ? 'recommended-primary' : ''}`} key={music.id}><div className="track-artwork" style={{ '--music-hue': [46, 186, 276][index] }}>{index === 0 ? <Waves size={17} /> : index === 1 ? <Sun size={16} /> : <AudioLines size={16} />}<span>{String(index + 1).padStart(2, '0')}</span></div><div className="recommended-copy"><div className="recommended-title-row"><strong>{music.name}</strong><span className="match-score">{music.score}<i>%</i></span></div><span>{music.artist} <i>·</i> {formatCompactTime(music.duration)}</span><div className="recommend-tags"><span>{moodLabel(music.mood)}</span><span>{music.tempo === 'mid' ? '中节奏' : music.tempo === 'slow' ? '慢节奏' : '节奏灵活'}</span></div><small>{music.license ? music.reason : '请确认许可后再用于成片'}</small></div><button className={`track-play ${recordingMusic === music.id ? 'is-playing' : ''}`} aria-label={`${recordingMusic === music.id ? '暂停' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}</button><button className="track-use" aria-label={`添加 ${music.name}`} title="添加到时间轴" onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}<div className="licence-checkbox" role="button" tabIndex={0} onClick={() => { const topTrack = suggestions[0]; saveMusicLicense(topTrack) }} onKeyDown={(event) => event.key === 'Enter' && saveMusicLicense(suggestions[0])}><span className={suggestions[0]?.license ? 'license-checkbox checked' : 'license-checkbox'}>{suggestions[0]?.license && <Check size={9} />}</span><span>我确认所选音乐具有用于个人作品的许可</span><button title="记录你的许可状态，不会验证实际授权内容。" onClick={(event) => { event.stopPropagation(); setStatus('Videome 不自动授予音乐版权；仅记录你自行确认的授权声明。', 'info') }}><Info size={11} /></button></div><button className="add-library-music" onClick={addMusicFiles}><Plus size={13} />添加一首授权的本地音乐</button></div><div className="music-ethics-note"><LockKeyhole size={11} /><span>推荐基于你导入的音乐元数据。本地模型分析不代替人工确认授权或配乐质量。</span></div></div>
+    return <div className="inspector-scroll music-inspector-scroll"><div className="music-match-card"><div className="match-card-ribbon"><Sparkles size={13} />LOCAL SOUND MATCHER</div><h3>给故事找到<br /><i>合适的声音。</i></h3><p>曲库筛选、情绪标签与匹配分数均在本机计算。未连接在线服务，不上传视频或素材。</p><div className="match-local-mark"><LockKeyhole size={12} />PRIVATE BY DEFAULT <span>·</span> AUDIO RIGHTS MATTER</div></div><div className="inspector-section music-preferences"><div className="section-heading-row"><div><span className="section-kicker">01 / STORY FEEL</span><span className="subsection-title">项目氛围</span></div><span className="offline-badge"><span />本地</span></div><span className="mood-choice-label">节奏与情绪</span><div className="mood-chips">{[['sunny', '晴朗', '☼'], ['calm', '舒缓', '↗'], ['dreamy', '朦胧', '◌'], ['energetic', '轻快', '↗']].map(([id, label, icon]) => <button className={mood === id ? 'mood-chip mood-selected' : 'mood-chip'} key={id} onClick={() => setMood(id)}><i>{icon}</i>{label}</button>)}</div><div className="mini-field-row"><span>剪辑节奏</span><select className="inline-select" value={tempo} onChange={(event) => setTempo(event.target.value)}><option value="slow">慢 · 余韵镜头</option><option value="mid">中 · 自然节奏</option><option value="fast">快 · 密集转场</option></select></div><div className="mini-field-row"><span>音乐响度</span><div className="mix-volume"><input aria-label="背景音乐响度" type="range" min="0.05" max="0.6" step="0.01" value={volumeTarget} onChange={(event) => { const next = Number(event.target.value); setVolumeTarget(next); if (selectedClip?.isMusic) setClipVolume(selectedClip.id, next) }} /><span>{Math.round(volumeTarget * 100)}%</span></div></div><div className="ducking-summary"><Headphones size={13} /><span>人声出现时自动压低音乐</span><span className="check-tick"><Check size={11} /></span></div></div><div className="inspector-section matches-section"><div className="section-heading-row"><div><span className="section-kicker">02 / MATCHES</span><span className="subsection-title">为这支影片推荐</span></div><button className="rerun-button" onClick={() => setStatus('推荐已按影片氛围、本机曲库和时长重新排序。', 'info')}><RotateCw size={12} />重新分析</button></div>{!musicFiles.length && <div className="rights-warning"><Info size={12} /><span>尚未导入本地音乐。导入后可试听并加入时间线。</span></div>}{suggestions.map((music, index) => <div className={`recommended-track ${index === 0 ? 'recommended-primary' : ''}`} key={music.id}><div className="track-artwork" style={{ '--music-hue': [46, 186, 276][index] }}>{index === 0 ? <Waves size={17} /> : index === 1 ? <Sun size={16} /> : <AudioLines size={16} />}<span>{String(index + 1).padStart(2, '0')}</span></div><div className="recommended-copy"><div className="recommended-title-row"><strong>{music.name}</strong><span className="match-score">{music.score}<i>%</i></span></div><span>{music.artist} <i>·</i> {formatCompactTime(music.duration)}</span><div className="recommend-tags"><span>{moodLabel(music.mood)}</span><span>{music.tempo === 'mid' ? '中节奏' : music.tempo === 'slow' ? '慢节奏' : '节奏灵活'}</span></div><small>{music.license ? music.reason : '请确认许可后再用于成片'}</small></div><button className={`track-play ${recordingMusic === music.id ? 'is-playing' : ''}`} aria-label={`${recordingMusic === music.id ? '暂停' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}</button><button className="track-use" aria-label={`添加 ${music.name}`} title="添加到时间轴" onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}<div className="licence-checkbox" role="button" aria-disabled={!suggestions.length} tabIndex={suggestions.length ? 0 : -1} onClick={() => { const topTrack = suggestions[0]; saveMusicLicense(topTrack) }} onKeyDown={(event) => event.key === 'Enter' && saveMusicLicense(suggestions[0])}><span className={suggestions[0]?.license ? 'license-checkbox checked' : 'license-checkbox'}>{suggestions[0]?.license && <Check size={9} />}</span><span>我确认所选音乐具有用于个人作品的许可</span><button title="记录你的许可状态，不会验证实际授权内容。" onClick={(event) => { event.stopPropagation(); setStatus('Videome 不自动授予音乐版权；仅记录你自行确认的授权声明。', 'info') }}><Info size={11} /></button></div><button className="add-library-music" onClick={addMusicFiles}><Plus size={13} />添加一首授权的本地音乐</button></div><div className="music-ethics-note"><LockKeyhole size={11} /><span>推荐基于你导入的音乐元数据。本地模型分析不代替人工确认授权或配乐质量。</span></div></div>
   }
 
   function renderProjectSettings() {
@@ -2284,7 +2342,7 @@ function App() {
     const inPoint = selectedClip.trimStart || 0
     const outPoint = selectedClip.trimEnd || inPoint + selectedClip.duration
 
-    return <div className="inspector-scroll"><div className="selected-clip-card"><div className={`inspector-preview-art thumb-${selectedClip.previewColor || 'ocean'}`} style={{ backgroundImage: selectedAsset?.thumbnail ? `url("${selectedAsset.thumbnail}")` : undefined }}><Film size={18} /><span className="inspector-card-tag">{selectedClip.kind === 'video' ? 'VIDEO' : 'IMAGE'}</span><span className="inspector-timecode-over">{formatTime(project.playhead)}</span></div><div className="selected-clip-copy"><b>{selectedClip.name}</b><span>{selectedAsset?.width ? `${selectedAsset.width}×${selectedAsset.height} · ` : ''}{selectedAsset?.codec?.toUpperCase() || (selectedClip.kind === 'image' ? '静态图像' : '视频片段')}</span><span>{selectedAsset?.path || '示例素材 · 仅预览'}</span></div></div><div className="inspector-section"><div className="section-heading-row"><div><span className="section-kicker">01 / SOURCE</span><span className="subsection-title">片段区间</span></div><button className="ghost-mini-button" onClick={() => setStatus('播放指针将显示绝对时间码；拖动红色播放头逐帧定位。', 'info')}>30fps <ChevronDown size={10} /></button></div><div className="trim-visual"><span className="trim-rail" /><span className="trim-window" style={{ left: `${sourceDuration ? inPoint / sourceDuration * 100 : 0}%`, width: `${Math.min(100, selectedClip.duration / Math.max(sourceDuration, selectedClip.duration) * 100)}%` }} /><span className="trim-handle start" /><span className="trim-handle end" /></div><div className="trim-fields"><label><span>入点</span><input aria-label="片段入点" value={trimDrafts.clipId === selectedClip.id ? trimDrafts.start : formatTime(inPoint)} onChange={(event) => setTrimDrafts((current) => ({ ...current, clipId: selectedClip.id, start: event.target.value }))} onBlur={(event) => commitTrimDraft(selectedClip, 'trimStart', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label><span className="trim-separator">—</span><label><span>出点</span><input aria-label="片段出点" value={trimDrafts.clipId === selectedClip.id ? trimDrafts.end : formatTime(outPoint)} onChange={(event) => setTrimDrafts((current) => ({ ...current, clipId: selectedClip.id, end: event.target.value }))} onBlur={(event) => commitTrimDraft(selectedClip, 'trimEnd', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label><span className="duration-value">{formatCompactTime(selectedClip.duration)}</span></div></div><div className="inspector-section audio-properties"><div className="section-kicker">02 / COMPOSITION</div><div className="mini-field-row"><span>画面填充</span><select className="inline-select" value={selectedClip.fill || 'contain'} onChange={(event) => editClip({ fill: event.target.value }, '设置画面适配')}><option value="contain">适应画布</option><option value="cover">裁剪铺满</option></select></div><div className="mini-field-row"><span>缩放比例</span><div className="mix-volume"><input aria-label="片段缩放" type="range" min="0.25" max="2" step="0.01" value={selectedClip.scale ?? 1} onChange={(event) => editClip({ scale: Number(event.target.value) }, '调整片段缩放')} /><span>{Math.round((selectedClip.scale || 1) * 100)}%</span></div></div><div className="mini-field-row"><span>水平偏移</span><div className="mix-volume"><input aria-label="画面水平位置" type="range" min="-0.6" max="0.6" step="0.01" value={selectedClip.x || 0} onChange={(event) => editClip({ x: Number(event.target.value) }, '调整画面位置')} /><span>{Math.round((selectedClip.x || 0) * 100)}%</span></div></div><div className="mini-field-row"><span>旋转画面</span><button className="rotate-clip" onClick={() => editClip({ rotation: ((Number(selectedClip.rotation) || 0) + 90) % 360 }, '旋转画面')}><RotateCw size={13} />{selectedClip.rotation || 0}° · 旋转 90°</button></div></div><div className="inspector-section inspector-audio"><div className="section-heading-row"><div><span className="section-kicker">03 / ORIGINAL SOUND</span><span className="subsection-title">原始收音</span></div><span className="volume-value">{Math.round((selectedClip.volume ?? 0.82) * 100)}%</span></div><div className="mix-volume big-volume"><Volume2 size={14} /><input type="range" min="0" max="1.5" step="0.01" value={selectedClip.volume ?? 0.82} onChange={(event) => setClipVolume(selectedClip.id, Number(event.target.value))} /><button aria-label="设为静音" onClick={() => setClipVolume(selectedClip.id, 0)}><VolumeX size={13} /></button></div><div className="inspector-note"><Info size={12} /><span>该操作修改工程音量，不触碰原视频文件。声音处理时会重新编码音频。</span></div></div>{warning && <div className="stream-warning"><Info size={13} /><span>{warning}</span></div>}<button className="section-reset-button" onClick={() => { setSelectedId(null); setActivePanel('素材库') }}>完成检查 <Check size={12} /></button></div>
+    return <div className="inspector-scroll"><div className="selected-clip-card"><div className={`inspector-preview-art thumb-${selectedClip.previewColor || 'ocean'}`} style={{ backgroundImage: selectedAsset?.thumbnail ? `url("${selectedAsset.thumbnail}")` : undefined }}><Film size={18} /><span className="inspector-card-tag">{selectedClip.kind === 'video' ? 'VIDEO' : 'IMAGE'}</span><span className="inspector-timecode-over">{formatTime(project.playhead)}</span></div><div className="selected-clip-copy"><b>{selectedClip.name}</b><span>{selectedAsset?.width ? `${selectedAsset.width}×${selectedAsset.height} · ` : ''}{selectedAsset?.codec?.toUpperCase() || (selectedClip.kind === 'image' ? '静态图像' : '视频片段')}</span><span>{selectedAsset?.path || (exampleMode ? '界面占位 · 未附带源文件' : '未关联源素材')}</span></div></div><div className="inspector-section"><div className="section-heading-row"><div><span className="section-kicker">01 / SOURCE</span><span className="subsection-title">片段区间</span></div><button className="ghost-mini-button" onClick={() => setStatus('播放指针将显示绝对时间码；拖动红色播放头逐帧定位。', 'info')}>30fps <ChevronDown size={10} /></button></div><div className="trim-visual"><span className="trim-rail" /><span className="trim-window" style={{ left: `${sourceDuration ? inPoint / sourceDuration * 100 : 0}%`, width: `${Math.min(100, selectedClip.duration / Math.max(sourceDuration, selectedClip.duration) * 100)}%` }} /><span className="trim-handle start" /><span className="trim-handle end" /></div><div className="trim-fields"><label><span>入点</span><input aria-label="片段入点" value={trimDrafts.clipId === selectedClip.id ? trimDrafts.start : formatTime(inPoint)} onChange={(event) => setTrimDrafts((current) => ({ ...current, clipId: selectedClip.id, start: event.target.value }))} onBlur={(event) => commitTrimDraft(selectedClip, 'trimStart', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label><span className="trim-separator">—</span><label><span>出点</span><input aria-label="片段出点" value={trimDrafts.clipId === selectedClip.id ? trimDrafts.end : formatTime(outPoint)} onChange={(event) => setTrimDrafts((current) => ({ ...current, clipId: selectedClip.id, end: event.target.value }))} onBlur={(event) => commitTrimDraft(selectedClip, 'trimEnd', event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label><span className="duration-value">{formatCompactTime(selectedClip.duration)}</span></div></div><div className="inspector-section audio-properties"><div className="section-kicker">02 / COMPOSITION</div><div className="mini-field-row"><span>画面填充</span><select className="inline-select" value={selectedClip.fill || 'contain'} onChange={(event) => editClip({ fill: event.target.value }, '设置画面适配')}><option value="contain">适应画布</option><option value="cover">裁剪铺满</option></select></div><div className="mini-field-row"><span>缩放比例</span><div className="mix-volume"><input aria-label="片段缩放" type="range" min="0.25" max="2" step="0.01" value={selectedClip.scale ?? 1} onChange={(event) => editClip({ scale: Number(event.target.value) }, '调整片段缩放')} /><span>{Math.round((selectedClip.scale || 1) * 100)}%</span></div></div><div className="mini-field-row"><span>水平偏移</span><div className="mix-volume"><input aria-label="画面水平位置" type="range" min="-0.6" max="0.6" step="0.01" value={selectedClip.x || 0} onChange={(event) => editClip({ x: Number(event.target.value) }, '调整画面位置')} /><span>{Math.round((selectedClip.x || 0) * 100)}%</span></div></div><div className="mini-field-row"><span>旋转画面</span><button className="rotate-clip" onClick={() => editClip({ rotation: ((Number(selectedClip.rotation) || 0) + 90) % 360 }, '旋转画面')}><RotateCw size={13} />{selectedClip.rotation || 0}° · 旋转 90°</button></div></div><div className="inspector-section inspector-audio"><div className="section-heading-row"><div><span className="section-kicker">03 / ORIGINAL SOUND</span><span className="subsection-title">原始收音</span></div><span className="volume-value">{Math.round((selectedClip.volume ?? 0.82) * 100)}%</span></div><div className="mix-volume big-volume"><Volume2 size={14} /><input type="range" min="0" max="1.5" step="0.01" value={selectedClip.volume ?? 0.82} onChange={(event) => setClipVolume(selectedClip.id, Number(event.target.value))} /><button aria-label="设为静音" onClick={() => setClipVolume(selectedClip.id, 0)}><VolumeX size={13} /></button></div><div className="inspector-note"><Info size={12} /><span>该操作修改工程音量，不触碰原视频文件。声音处理时会重新编码音频。</span></div></div>{warning && <div className="stream-warning"><Info size={13} /><span>{warning}</span></div>}<button className="section-reset-button" onClick={() => { setSelectedId(null); setActivePanel('素材库') }}>完成检查 <Check size={12} /></button></div>
   }
 
   function editClip(patch, label) {
@@ -2346,7 +2404,7 @@ function App() {
   }
 
   function renderDefaultInspector() {
-    return <div className="inspector-scroll"><div className="inspector-empty-card"><span className="inspector-empty-orbit" /><div className="empty-icon"><Layers3 size={20} /></div><h3>挑一个片段<br /><i>开始调整。</i></h3><p>画面、声音与字幕的所有参数，都会在这里展开。</p><button onClick={() => setActivePanel('素材库')}>选取主视频 <ChevronRight size={13} /></button></div><div className="inspector-section shortcuts-section"><div className="section-kicker">QUICK ACCESS</div><button className="quick-action-button" onClick={() => openPicker({ addToTimeline: true })}><Plus size={13} />添加视频到时间线<kbd>⌘ I</kbd></button><button className="quick-action-button" onClick={addGraphicClip}><ImagePlus size={13} />添加标题图文<kbd>⌘ T</kbd></button><button className="quick-action-button" onClick={() => setActiveTab('subtitles')}><Subtitles size={13} />编辑字幕<kbd>I</kbd></button><button className="quick-action-button" onClick={saveProject}><Download size={13} />安全保存工程<kbd>⌘ S</kbd></button></div><div className="project-health-card"><div className="health-heading"><span><span className="health-dot" />工程健康</span><b>{project.assets.some((asset) => asset.missing) ? '有待修复' : '正常'}</b></div><div className="health-meter"><i style={{ width: `${project.assets.length ? Math.max(24, 100 - project.assets.filter((asset) => asset.missing).length * 17) : 24}%` }} /></div><div className="health-micro-copy"><span>{project.assets.length} 个已登记素材</span><span>{project.clips.length} 个时间线元素</span></div></div></div>
+    return <div className="inspector-scroll"><div className="inspector-empty-card"><span className="inspector-empty-orbit" /><div className="empty-icon"><Layers3 size={20} /></div><h3>挑一个片段<br /><i>开始调整。</i></h3><p>画面、声音与字幕的所有参数，都会在这里展开。</p><button onClick={() => setActivePanel('素材库')}>选取主视频 <ChevronRight size={13} /></button></div><div className="inspector-section shortcuts-section"><div className="section-kicker">QUICK ACCESS</div><button className="quick-action-button" onClick={() => openPicker({ addToTimeline: true })}><Plus size={13} />添加视频到时间线<kbd>⌘ I</kbd></button><button className="quick-action-button" onClick={addGraphicClip}><ImagePlus size={13} />添加标题图文<kbd>⌘ T</kbd></button><button className="quick-action-button" onClick={() => setActiveTab('subtitles')}><Subtitles size={13} />编辑字幕<kbd>I</kbd></button><button className="quick-action-button" onClick={() => void saveProject()}><Download size={13} />安全保存工程<kbd>⌘ S</kbd></button></div><div className="project-health-card"><div className="health-heading"><span><span className="health-dot" />工程健康</span><b>{project.assets.some((asset) => asset.missing) ? '有待修复' : '正常'}</b></div><div className="health-meter"><i style={{ width: `${project.assets.length ? Math.max(24, 100 - project.assets.filter((asset) => asset.missing).length * 17) : 24}%` }} /></div><div className="health-micro-copy"><span>{project.assets.length} 个已登记素材</span><span>{project.clips.length} 个时间线元素</span></div></div></div>
   }
 
   function renderFooter() {
@@ -2424,6 +2482,7 @@ function App() {
       {renderFooter()}
       {message && <div className={`toast toast-${messageKind}`} role="status"><span className="toast-mark">{messageKind === 'error' ? <Info size={14} /> : messageKind === 'info' ? <Sparkles size={14} /> : <CheckCircle2 size={14} />}</span><span>{message}</span><button aria-label="关闭通知" onClick={() => setMessage('')}><X size={14} /></button></div>}
       {renderExportDialog()}
+      {renderProjectLocation()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}
@@ -2587,7 +2646,28 @@ function App() {
 
 
   function renderNewProjectMenu() {
-    return <div className="new-project-menu" hidden><button onClick={createEmptyProject}>新建空白工程</button><button onClick={openProject}>打开工程…</button></div>
+    if (!showProjectMenu) return null
+    const action = (operation) => () => { setShowProjectMenu(false); void operation() }
+    return <div className="new-project-menu" role="menu" aria-label="工程操作">
+      <button role="menuitem" onClick={action(createEmptyProject)}><Plus size={14} />新建空白工程</button>
+      <button role="menuitem" onClick={action(openProject)}><FolderOpen size={14} />打开工程…</button>
+      <button role="menuitem" onClick={action(() => saveProject({ saveAs: true }))}><Copy size={14} />另存为…</button>
+      <button role="menuitem" onClick={action(() => setShowProjectLocation(true))}><FolderOpen size={14} />工程位置…</button>
+      {previousProject?.project && <button role="menuitem" onClick={action(restorePreviousProject)}><RotateCcw size={14} />恢复切换前的工程</button>}
+      <div className="project-menu-divider" />
+      <button role="menuitem" onClick={action(resetStory)}><Layers3 size={14} /><span>查看界面示例<small>不包含视频或音乐文件</small></span></button>
+    </div>
+  }
+
+  function renderProjectLocation() {
+    if (!showProjectLocation) return null
+    const folderLabel = storageLocations?.platform === 'darwin' ? '在 Finder 中显示' : '在文件夹中显示'
+    return <div className="dialog-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowProjectLocation(false) }}><section className="project-location-dialog" role="dialog" aria-modal="true" aria-labelledby="project-location-title">
+      <div className="dialog-header"><div><span className="eyebrow">PROJECT FILES</span><h2 id="project-location-title">工程位置与本地文件</h2></div><button autoFocus className="icon-button compact" aria-label="关闭工程位置" onClick={() => setShowProjectLocation(false)}><X size={16} /></button></div>
+      <div className="project-file-section"><span className="section-kicker">当前工程</span><strong>{project.name}</strong><p className="project-file-path">{projectPath || '尚未保存为 .videome 工程文件'}</p>{projectPath ? <div className="project-file-actions"><button onClick={() => void revealProject()}><FolderOpen size={14} />{folderLabel}</button><button onClick={() => void navigator.clipboard.writeText(projectPath).then(() => setStatus('已复制工程路径。')).catch(() => setStatus('复制失败，请手动选择路径。', 'error'))}><Copy size={14} />复制路径</button><button onClick={() => void saveProject({ saveAs: true })}>另存为…</button></div> : <><p>当前修改保存在本机恢复缓存。保存工程后可自行管理和重新打开。</p><button className="project-primary-action" onClick={() => void saveProject()}><Download size={14} />选择位置并保存</button></>}</div>
+      <div className="project-file-section"><span className="section-kicker">源素材</span><p>{project.assets.length} 个已登记素材。原文件保留在导入位置，工程保存剪辑信息与文件路径。</p><button className="project-text-action" onClick={() => { setShowProjectLocation(false); setActivePanel('素材库'); setActiveTab('edit') }}>查看素材库 <ChevronRight size={13} /></button></div>
+      <div className="project-file-section"><span className="section-kicker">本机恢复缓存</span><p className="project-file-path">{storageLocations?.dataDirectory || '当前浏览器的本地存储'}</p><p>用于恢复编辑状态和批次记录，成片保存在生成时选择的输出目录。</p></div>
+    </section></div>
   }
 
   function seekToClip(clip) {
@@ -2597,18 +2677,8 @@ function App() {
   }
 
   function resetStory() {
-    projectEpochRef.current += 1
-    projectRef.current = sampleProject
-    setProject(sampleProject)
-    updateSelectedClipIds([])
-    setSelectedId('sample-3')
-    const libraryAssets = mergeAssetLibraries(projectRef.current.assets, assets, loadAssets())
-    setAssets(libraryAssets)
-    setProject((current) => ({ ...current, assets: libraryAssets }))
-    setProjectPath(null)
-    setEditHistory([])
-    setEditFuture([])
-    setStatus('已载入界面示例工程。真实剪辑请导入自己的素材。', 'info')
+    if (!loadOpenedProject(structuredClone(sampleProject), null)) return
+    setStatus('已打开界面示例，不包含视频或音乐文件。可在项目菜单恢复切换前的工程。', 'info')
   }
 
   function showAbout() {
@@ -2809,7 +2879,7 @@ function normalizeProjectName(value) {
 
 function projectPathMatchesName(value, name) {
   const fileName = pathBasename(value).replace(/\.videome$/i, '')
-  const expectedFileName = normalizeProjectName(name).replace(/[\\/\0]/g, '-')
+  const expectedFileName = projectFileName(normalizeProjectName(name))
   return Boolean(fileName) && fileName.normalize('NFC') === expectedFileName.normalize('NFC')
 }
 
@@ -2854,13 +2924,7 @@ function parseClock(value, fallback) {
 }
 
 function loadProject() {
-  try {
-    const saved = localStorage.getItem('videome-project') || localStorage.getItem('videome-autosave')
-    const parsed = saved ? JSON.parse(saved) : null
-    return parsed && typeof parsed === 'object' ? hydrateProject(parsed) : sampleProject
-  } catch {
-    return sampleProject
-  }
+  return hydrateProject(readProjectSession(localStorage).project)
 }
 
 function loadAssets() {

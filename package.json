@@ -6,13 +6,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.preview.config.js --host 127.0.0.1 --port 4179",
-    "desktop:dev": "concurrently -k 'vite --host 127.0.0.1 --port 5173' 'wait-on http://127.0.0.1:5173 && electron .'",
+    "desktop:dev": "node scripts/desktop-dev.cjs",
     "desktop": "electron .",
     "start": "npm run dev",
     "test": "vitest run",
     "build": "vite build",
-    "bundle:media": "node scripts/bundle-media.cjs",
-    "dist:mac": "npm run build && npm run bundle:media && electron-builder --mac dir"
+    "bundle:media": "npm run media:prepare",
+    "dist:mac": "npm run build && node scripts/package.cjs mac",
+    "media:prepare": "node scripts/media-prepare.cjs",
+    "media:check": "node scripts/media-check.cjs",
+    "dist:win": "npm run build && node scripts/package.cjs win",
+    "verify:package": "node scripts/verify-package.cjs",
+    "acceptance:fixtures": "node scripts/acceptance-fixtures.cjs",
+    "diagnostics": "node scripts/diagnostics.cjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "5.3.0",
@@ -42,11 +48,30 @@
       "!electron/**/*.test.js"
     ],
     "extraResources": [
-      { "from": "media-bin", "to": "media-bin" }
+      {
+        "from": "media-bin/${platform}-${arch}",
+        "to": "media-bin"
+      },
+      {
+        "from": "resources/fonts",
+        "to": "fonts"
+      },
+      {
+        "from": "resources/THIRD-PARTY-NOTICES.txt",
+        "to": "THIRD-PARTY-NOTICES.txt"
+      }
     ],
     "mac": {
-      "target": "dir",
-      "category": "public.app-category.video"
+      "target": [
+        "dir",
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.video",
+      "minimumSystemVersion": "15.0",
+      "identity": "-",
+      "notarize": false,
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "fileAssociations": [
       {
@@ -57,6 +82,32 @@
         "role": "Editor"
       }
     ],
-    "asar": true
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}-${target}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-win-${arch}-portable.${ext}"
+    }
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

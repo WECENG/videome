@@ -9,7 +9,7 @@ function registerBatchMixIpc({ ipcMain, app, dialog, shell, manager, authorize, 
     catch (error) { return { ok: false, reason: error.message } }
   })
   handle('pick-directory', async () => {
-    const selection = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], defaultPath: app.getPath('movies') })
+    const selection = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], defaultPath: app.getPath('videos') })
     return selection.canceled ? null : { path: selection.filePaths[0] }
   })
   handle('analyze', async (service, payload) => {

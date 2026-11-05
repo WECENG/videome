@@ -1,0 +1,35 @@
+const fs = require('node:fs/promises')
+const path = require('node:path')
+const os = require('node:os')
+const { root, checkMedia, exec, digest, files } = require('./media-tools.cjs')
+const { filterPath } = require('../electron/runtime.cjs')
+
+async function main() {
+  const directory = path.resolve(process.argv[2] || path.join(root, 'release', process.platform === 'darwin' ? 'mac-arm64/Videome.app/Contents/Resources' : 'win-unpacked/resources'))
+  await checkMedia(path.join(directory, 'media-bin'))
+  const manifest = require('../resources/media-sources.json')
+  const font = path.join(directory, 'fonts/NotoSansCJKsc-Regular.otf')
+  if (await digest(font) !== manifest.font.sha256) throw new Error('包内字体缺失或摘要不匹配。')
+  const asar = await import('@electron/asar')
+  for (const entry of ['electron/main.cjs', 'electron/runtime.cjs', 'electron/filesystem.cjs', 'electron/processes.cjs', 'electron/batch/process.cjs', 'electron/batch/manager.cjs', 'dist/index.html']) asar.extractFile(path.join(directory, 'app.asar'), entry)
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'videome-package-'))
+  try {
+    const suffix = process.platform === 'win32' ? '.exe' : ''
+    const ffmpeg = path.join(directory, 'media-bin', `ffmpeg${suffix}`)
+    const ffprobe = path.join(directory, 'media-bin', `ffprobe${suffix}`)
+    const result = path.join(workspace, '字幕 smoke.mp4')
+    await exec(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=320x180:r=30:d=1', '-vf', `drawtext=fontfile=${filterPath(font)}:text='你好 Videome':fontsize=24:fontcolor=white`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-threads', '2', result], { windowsHide: true })
+    await exec(ffmpeg, ['-v', 'error', '-xerror', '-i', result, '-f', 'null', '-'], { windowsHide: true })
+    const { stdout } = await exec(ffprobe, ['-v', 'error', '-count_frames', '-show_streams', '-of', 'json', result], { windowsHide: true })
+    if (Number(JSON.parse(stdout).streams[0].nb_read_frames) !== 30) throw new Error('包内转码检查帧数错误。')
+  } finally { await fs.rm(workspace, { recursive: true, force: true }) }
+  const artifacts = (await files(path.join(root, 'release'))).filter((file) => /\.(dmg|zip|exe)$/.test(file) && !file.includes('win-unpacked'))
+  const checksums = await Promise.all(artifacts.map(async (file) => `${await digest(file)}  ${path.relative(path.join(root, 'release'), file)}`))
+  await fs.writeFile(path.join(root, 'release/SHA256SUMS.txt'), checksums.join('\n') + '\n')
+  const revision = await exec('git', ['rev-parse', 'HEAD']).then((result) => result.stdout.trim())
+  const dirty = await exec('git', ['status', '--porcelain']).then((result) => Boolean(result.stdout.trim()))
+  const mediaFiles = await Promise.all((await files(path.join(directory, 'media-bin'))).map(async (file) => ({ path: path.relative(directory, file), sha256: await digest(file) })))
+  await fs.writeFile(path.join(root, 'release/build-info.json'), JSON.stringify({ version: require('../package.json').version, revision, dirty, platform: process.platform, arch: process.arch, os: os.release(), node: process.version, electron: require('electron/package.json').version, packagedResources: directory, automaticChecks: 'passed', manualAcceptance: 'pending', builtAt: new Date().toISOString(), mediaFiles, media: JSON.parse(await fs.readFile(path.join(directory, 'media-bin/build-info.json'), 'utf8')) }, null, 2))
+  console.log('打包资源与实际转码检查通过；人工验收保持 pending。')
+}
+main().catch((error) => { console.error(error); process.exitCode = 1 })

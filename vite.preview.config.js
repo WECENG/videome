@@ -11,6 +11,8 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const { buildExportArguments } = require('./electron/export.cjs')
+const { toolCandidates, fontResources, nativePath, encoderFor, hardwareFailure } = require('./electron/runtime.cjs')
+const { stopChild } = require('./electron/processes.cjs')
 const { createAss } = await import('./src/domain.js')
 
 const PROJECT_ROOT = path.dirname(fileURLToPath(import.meta.url))
@@ -19,14 +21,7 @@ const SESSION_KEY = randomBytes(32).toString('hex')
 const EXPORT_JOBS = new Map()
 
 function normalizeFilePath(requestPath) {
-  let decoded = decodeURIComponent(requestPath || '')
-  if (/^[A-Za-z]:[\\/]/.test(decoded)) decoded = decoded.slice(1)
-  const resolved = path.resolve(decoded)
-  if (/^[A-Za-z]:[\\/]/.test(decoded)) {
-    const portableCandidate = path.resolve(PROJECT_ROOT, decoded.replace(/^[A-Za-z]:[\\/]/, ''))
-    if (!withinAnyRoot(resolved)) return portableCandidate
-  }
-  return resolved
+  return path.resolve(nativePath(requestPath))
 }
 
 function withinAnyRoot(targetPath) {
@@ -58,10 +53,7 @@ function command(binary, args) {
 }
 
 function resolveTool(name) {
-  const candidates = name === 'ffprobe'
-    ? ['/opt/homebrew/bin/ffprobe', '/usr/local/bin/ffprobe', '/usr/bin/ffprobe']
-    : ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']
-  return candidates
+  return toolCandidates(name)
 }
 
 function withTimeout(operation, ms = 60_000) {
@@ -142,7 +134,7 @@ function createPreviewApi() {
           }
 
           if (endpoint === '/media' && request.method === 'GET') {
-            const requestedPath = decodeURIComponent(url.searchParams.get('path') || '')
+            const requestedPath = url.searchParams.get('path') || ''
             const mediaPath = await resolveReadableMediaPath(requestedPath)
             const signature = createHmac('sha256', SESSION_KEY).update(mediaPath).digest('hex')
             if (signature !== url.searchParams.get('sig')) { respond(403, { error: 'Media URLs expire when the local session closes.' }); return }
@@ -196,7 +188,7 @@ function createPreviewApi() {
             if (jobRoute[2] === 'cancel') {
               if (job.child && job.state === 'running') {
                 job.state = 'cancelling'
-                job.child.kill('SIGTERM')
+                stopChild(job.child)
               } else {
                 clearJob(job)
                 job.state = 'cancelled'
@@ -333,6 +325,7 @@ function createJob(project, settings, inputPaths) {
       fontSize: snapshot.subtitle.fontSize || 42,
       bottomPadding: snapshot.subtitle.bottomPadding || 92,
       background: snapshot.subtitle.background,
+      family: fontResources().fontFamily,
     }))
   } else if (subtitlePath) {
     fsSyncMkdir(outputDir)
@@ -350,7 +343,7 @@ function createJob(project, settings, inputPaths) {
     try { require('node:fs').accessSync(binary); return true } catch { return false }
   })
   if (!ffmpegPath) throw new Error('未检测到 FFmpeg；请安装 FFmpeg 后重启本地预览服务。')
-  const job = { id: jobId, state: 'running', progress: 0, outputPath, partialPath, subtitlePath, format, fileName: `${safeOutputName(project.name)}.${format}`, plan, startedAt: Date.now(), error: null, child: null }
+  const job = { settings: { ...settings, project: snapshot, preset, format }, retried: false, id: jobId, state: 'running', progress: 0, outputPath, partialPath, subtitlePath, format, fileName: `${safeOutputName(project.name)}.${format}`, plan, startedAt: Date.now(), error: null, child: null }
   EXPORT_JOBS.set(jobId, job)
   runJob(job, ffmpegPath)
   return job
@@ -382,16 +375,22 @@ function runJob(job, ffmpegPath) {
   }, 500)
   child.on('error', (error) => {
     clearInterval(statTimer)
-    job.error = error.message
-    job.state = 'error'
-    clearJob(job)
+    job.spawnError = error.message
   })
   child.on('close', async (code) => {
     clearInterval(statTimer)
     job.child = null
+    if (job.spawnError) { job.error = job.spawnError; job.state = 'error'; clearJob(job); return }
     if (job.state === 'cancelling') {
       clearJob(job)
       job.state = 'cancelled'
+      return
+    }
+    if (code !== 0 && !job.retried && /videotoolbox$/.test(job.plan.encoder || '') && hardwareFailure(new Error(stderr))) {
+      job.retried = true
+      await fs.rm(job.partialPath, { force: true })
+      job.plan = buildExportArguments(job.settings, job.partialPath, job.subtitlePath, { ...fontResources(), encoder: encoderFor(job.settings.videoCodec, process.platform, true) })
+      runJob(job, ffmpegPath)
       return
     }
     if (code === 0) {

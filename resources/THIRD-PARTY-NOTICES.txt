@@ -1,0 +1,17 @@
+Videome internal testing build
+
+FFmpeg / FFprobe are separate bundled executables. Windows build: Gyan 9.0.2
+essentials (GPL v3); source and binary URLs / checksums: media-bin/build-info.json.
+FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/946fcce07b
+Build provider: https://www.gyan.dev/ffmpeg/builds/
+macOS binaries: Homebrew bottles; versions, source URLs, checksums and formula
+licenses are recorded in media-bin/build-info.json; notices in media-bin/licenses.
+FFmpeg incorporates GPL libraries including x264 and x265. Preserve the bundled
+license notices and corresponding source / build information when redistributing.
+
+Noto Sans CJK SC, Sans2.004, Copyright Adobe and Google.
+Licensed under SIL Open Font License 1.1; full text: fonts/LICENSE.txt.
+Source: https://github.com/notofonts/noto-cjk/tree/Sans2.004
+
+Electron and Chromium notices: LICENSE.electron.txt and LICENSES.chromium.html
+alongside the packaged executable (or within the macOS application bundle).

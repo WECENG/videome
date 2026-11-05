@@ -1,4 +1,5 @@
 const path = require('node:path')
+const { fontResources, encoderFor, filterPath } = require('./runtime.cjs')
 
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.mkv', '.webm', '.avi', '.mts', '.mxf'])
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.m4a', '.aac', '.flac', '.aiff', '.ogg'])
@@ -27,10 +28,6 @@ function escapeFilterString(value) {
     .replace(/\[/g, '\\[')
     .replace(/\]/g, '\\]')
     .replace(/\n/g, ' ')
-}
-
-function subtitleFilterPath(filePath) {
-  return String(filePath).replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'").replace(/,/g, '\\,')
 }
 
 function buildSubtitles(project, frameSize) {
@@ -64,7 +61,9 @@ function buildSubtitles(project, frameSize) {
     }))
 }
 
-function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
+function buildExportArguments(settings, temporaryOutput, subtitlePath = null, runtime = {}) {
+  const fonts = { ...fontResources(), ...runtime }
+  const encoder = runtime.encoder || encoderFor(settings.videoCodec)
   const project = settings.project || {}
   const assets = Array.isArray(project.assets) ? project.assets : []
   const clips = [...(project.clips || [])]
@@ -232,7 +231,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
       const output = `textLayer${index}`
       const position = clip.titlePosition === 'top' ? 'h*0.13' : clip.titlePosition === 'center' ? '(h-text_h)/2' : 'h-text_h-100'
       const size = Math.max(18, Math.round(Number(clip.fontSize || project.subtitle?.fontSize || 42) * height / 1080))
-      filters.push(`[${base}]drawtext=fontfile='/System/Library/Fonts/Helvetica.ttc':text='${text}':fontcolor=white:fontsize=${size}:borderw=3:bordercolor=black:box=1:boxcolor=black@0.32:x=(w-text_w)/2:y=${position}:enable='between(t,${number(start)},${number(start + clipDuration)})'[${output}]`)
+      filters.push(`[${base}]drawtext=fontfile=${filterPath(fonts.fontFile)}:text='${text}':fontcolor=white:fontsize=${size}:borderw=3:bordercolor=black:box=1:boxcolor=black@0.32:x=(w-text_w)/2:y=${position}:enable='between(t,${number(start)},${number(start + clipDuration)})'[${output}]`)
       filters.push(`[${output}]null[${next}]`)
     }
   })
@@ -240,9 +239,9 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
   let videoLabel = `vbase${orderedVideo.length}`
 
   if (subtitlePath && subtitles.length) {
-    const filterPath = subtitleFilterPath(subtitlePath)
+    const subtitleFile = filterPath(subtitlePath)
     const subtitleOutput = 'captionedVideo'
-    filters.push(`[${videoLabel}]subtitles=filename='${filterPath}':fontsdir='/System/Library/Fonts'[${subtitleOutput}]`)
+    filters.push(`[${videoLabel}]subtitles=filename=${subtitleFile}:fontsdir=${filterPath(fonts.fontsDirectory)}[${subtitleOutput}]`)
     videoLabel = subtitleOutput
   }
 
@@ -327,16 +326,21 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
     args.push('-c:v', 'ffv1', '-level', '3')
     if (audioLabels.length) args.push('-c:a', 'pcm_s24le')
   } else if (settings.videoCodec === 'hevc') {
-    args.push('-c:v', 'hevc_videotoolbox', '-b:v', `${Math.max(4, Number(settings.videoBitrateMbps || 16))}M`, '-tag:v', 'hvc1')
+    args.push('-c:v', encoder, '-b:v', `${Math.max(4, Number(settings.videoBitrateMbps || 16))}M`, '-tag:v', 'hvc1')
     if (audioLabels.length) args.push('-c:a', 'aac', '-b:a', `${Math.max(128, Number(settings.audioBitrateKbps || 256))}k`)
   } else if (format === 'webm') {
     args.push('-c:v', 'libvpx-vp9', '-deadline', 'good', '-cpu-used', '4', '-crf', String(Math.max(16, 30 - Math.round(Number(settings.videoBitrateMbps || 12) / 2))), '-b:v', '0')
     if (audioLabels.length) args.push('-c:a', 'libopus', '-b:a', `${Math.max(128, Number(settings.audioBitrateKbps || 256))}k`)
   } else {
-    args.push('-c:v', 'h264_videotoolbox', '-b:v', `${Math.max(4, Number(settings.videoBitrateMbps || 12))}M`, '-profile:v', 'high', '-tag:v', 'avc1')
+    args.push('-c:v', encoder, '-b:v', `${Math.max(4, Number(settings.videoBitrateMbps || 12))}M`, '-profile:v', 'high', '-tag:v', 'avc1')
     if (audioLabels.length) args.push('-c:a', 'aac', '-b:a', `${Math.max(128, Number(settings.audioBitrateKbps || 256))}k`)
   }
 
+  if (['libx264', 'libx265'].includes(encoder) && preset !== 'lossless' && format !== 'webm') {
+    args.push('-preset', 'fast', '-threads:v', '2')
+    if (encoder === 'libx265') args.push('-x265-params', 'pools=2:frame-threads=2')
+  }
+  args.push('-pix_fmt', 'yuv420p')
   if (format === 'mp4' || format === 'mov') args.push('-movflags', '+faststart')
   if (format === 'mkv' || format === 'matroska') args.push('-f', 'matroska')
   if (format === 'mov') args.push('-f', 'mov')
@@ -345,6 +349,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null) {
 
   return {
     args,
+    encoder: preset === 'lossless' ? 'ffv1' : format === 'webm' ? 'libvpx-vp9' : encoder,
     duration,
     expectedSizeBytes: preset === 'lossless'
       ? Math.ceil(duration * width * height * 0.3)

@@ -892,3 +892,33 @@ button:disabled { cursor: not-allowed !important; opacity: .38 !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
 }
+
+/* Project entry points and file locations remain visible beside the editor. */
+.breadcrumb { flex: 1; gap: 10px; }
+.project-title-input { flex: 1; min-width: 70px; max-width: 230px; }
+.project-title-input input { width: 100%; min-width: 0; }
+.project-menu-anchor { position: relative; flex-shrink: 0; }
+.crumb-root { gap: 6px; min-height: 30px; }
+.new-project-menu { position: absolute; z-index: 100; top: 36px; left: 0; width: 228px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fcfbf8; box-shadow: var(--shadow); }
+.new-project-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 36px; border: 0; border-radius: 4px; padding: 8px 10px; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
+.new-project-menu button:hover { background: #eaf0e7; }
+.new-project-menu small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.project-menu-divider { height: 1px; margin: 5px 4px; background: var(--line); }
+.project-location-trigger { display: inline-flex; align-items: center; flex-shrink: 0; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; background: #f8f7f2; color: #687367; font-size: 10px; cursor: pointer; }
+.location-dot { width: 5px; height: 5px; border-radius: 50%; background: #b58b5d; }
+.location-dot.saved { background: #74957a; }
+.example-badge { color: #977447; font-size: 9px; white-space: nowrap; }
+.project-location-dialog { width: min(580px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 22px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--paper-raised); box-shadow: var(--shadow); }
+.project-file-section { padding: 18px 0 12px; border-bottom: 1px solid var(--line); }
+.project-file-section:last-child { border-bottom: 0; }
+.project-file-section strong { display: block; margin-top: 10px; font-size: 15px; }
+.project-file-section p { color: var(--ink-secondary); line-height: 1.8; font-size: 12px; }
+.project-file-section .project-file-path { padding: 10px 12px; border-radius: 5px; background: #efeee7; color: var(--ink); font-size: 11px; overflow-wrap: anywhere; user-select: text; }
+.project-file-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.project-file-actions button, .project-primary-action, .example-start-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 11px; border: 1px solid #c7d0c3; border-radius: 5px; background: #f9faf5; cursor: pointer; }
+.project-primary-action { background: #416960; color: white; border-color: #416960; }
+.project-text-action { display: inline-flex; gap: 5px; align-items: center; border: 0; padding: 0; background: transparent; color: var(--teal); cursor: pointer; }
+.example-start-button { margin-top: 16px; align-self: flex-start; color: #f5eedc; background: #ffffff10; border-color: #ffffff40; }
+@media (max-width: 1120px) { .example-badge { display: none; } }
+@media (max-width: 760px) { .project-menu-anchor .crumb-root { display: inline-flex; font-size: 10px; } .project-location-trigger { font-size: 9px; padding: 5px; } }
+.example-start-button { pointer-events: auto; }

@@ -3,6 +3,8 @@ const fs = require('node:fs/promises')
 const { createReadStream } = require('node:fs')
 const crypto = require('node:crypto')
 const path = require('node:path')
+const { terminateTree } = require('../processes.cjs')
+const { encoderFor, hardwareFailure } = require('../runtime.cjs')
 
 function run(binary, args, { signal, onLine = () => {}, onChild = () => {}, timeoutMs = 30 * 60 * 1000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -17,8 +19,9 @@ function run(binary, args, { signal, onLine = () => {}, onChild = () => {}, time
     let killTimer
     let timedOut = false
     const abort = () => {
-      child.kill('SIGTERM')
-      killTimer ||= setTimeout(() => child.kill('SIGKILL'), 5000)
+      if (child.connected) child.send({ type: 'stop' }, () => {})
+      else terminateTree(child)
+      killTimer ||= setTimeout(() => terminateTree(child, true), 5000)
     }
     const timer = setTimeout(() => { timedOut = true; abort() }, timeoutMs)
     signal?.addEventListener('abort', abort, { once: true })
@@ -149,7 +152,7 @@ function buildArguments(source, sequence, options, output, encoder) {
 
 async function render(ffmpeg, source, item, options, output, context = {}) {
   const execute = context.run || run
-  let encoder = process.platform === 'darwin' ? 'h264_videotoolbox' : 'libx264'
+  let encoder = encoderFor('h264')
   const progress = (line) => {
     const match = line.match(/^out_time_us=(\d+)/)
     if (match) context.onProgress?.(Math.min(99, Number(match[1]) / 1e6 / options.actualSeconds * 100))
@@ -157,7 +160,7 @@ async function render(ffmpeg, source, item, options, output, context = {}) {
   try {
     await execute(ffmpeg, buildArguments(source, item.sequence, options, output, encoder), { ...context, onLine: progress })
   } catch (error) {
-    if (context.signal?.aborted || encoder !== 'h264_videotoolbox' || !/videotoolbox|encoder.*(?:open|initial)|cannot create.*compression|hardware.*(?:fail|unavailable)/i.test(error.message)) throw error
+    if (context.signal?.aborted || encoder !== 'h264_videotoolbox' || !hardwareFailure(error)) throw error
     context.onHardwareFallback?.()
     await fs.rm(output, { force: true })
     encoder = 'libx264'

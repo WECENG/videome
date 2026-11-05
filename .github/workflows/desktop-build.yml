@@ -1,0 +1,76 @@
+name: Desktop internal test packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: mac
+            architecture: arm64
+            media: darwin-arm64
+          - runner: windows-2022
+            platform: win
+            architecture: x64
+            media: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify runner architecture
+        run: node -e "if(process.arch !== '${{ matrix.architecture }}')process.exit(1); console.log(process.platform,process.arch,process.version)"
+      - run: npm ci
+      - name: Prepare bundled media
+        run: npm run media:prepare
+      - run: npm run media:check
+      - name: Full automated tests
+        run: npm test 2>&1 | tee output/automated-tests.log
+      - name: Build native packages
+        run: npm run dist:${{ matrix.platform }} 2>&1 | tee output/package-build.log
+      - name: Verify bundled modules and actual transcoding
+        run: npm run verify:package 2>&1 | tee output/package-check.log
+      - name: Create manual acceptance materials
+        run: |
+          npm run acceptance:fixtures
+          node scripts/acceptance-materials.cjs
+      - name: Upload packages and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: Videome-${{ matrix.media }}-${{ github.run_number }}
+          retention-days: 30
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.json
+            release/*.txt
+            release/manual-acceptance/**
+            output/*.log
+      - name: Archive compatible media for local builds
+        run: tar -czf release/media-${{ matrix.media }}.tar.gz -C media-bin ${{ matrix.media }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-${{ matrix.media }}-${{ github.run_number }}
+          retention-days: 30
+          path: release/media-*.tar.gz
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-${{ matrix.media }}-${{ github.run_number }}
+          path: |
+            release/*builder*.yml
+            release/build-info.json
+            output/**/*.json
+            output/*.log

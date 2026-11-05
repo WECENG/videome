@@ -4,12 +4,14 @@ const crypto = require('node:crypto')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
-const { fileURLToPath } = require('node:url')
+const { fileURLToPath, pathToFileURL } = require('node:url')
 const { buildExportArguments, classifyAsset } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
 const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectFileName, withProjectExtension, writeProjectSnapshot } = require('./project.cjs')
 const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
 const { registerBatchMixIpc } = require('./batch/ipc.cjs')
+const { locateTool, fontResources, encoderFor, hardwareFailure, filterPath } = require('./runtime.cjs')
+const { stopChild } = require('./processes.cjs')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
 const projectFilter = [{ name: 'Videome 工程', extensions: ['videome'] }]
@@ -77,8 +79,7 @@ function makeWindow() {
     minHeight: 780,
     backgroundColor: '#f7f5f0',
     title: 'Videome',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 19 },
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 19 } } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -105,22 +106,7 @@ function makeWindow() {
 }
 
 function locateBinary(name) {
-  const packaged = path.join(process.resourcesPath, 'media-bin', name)
-  const candidates = app.isPackaged
-    ? [packaged, '/opt/homebrew/bin/' + name, '/usr/local/bin/' + name, '/usr/bin/' + name]
-    : ['/opt/homebrew/bin/' + name, '/usr/local/bin/' + name, '/usr/bin/' + name, packaged]
-
-  return fs.access(candidates[0]).then(() => candidates[0]).catch(async () => {
-    for (const candidate of candidates.slice(1)) {
-      try {
-        await fs.access(candidate)
-        return candidate
-      } catch {
-        // Check the next common local or bundled installation.
-      }
-    }
-    return null
-  })
+  return Promise.resolve(locateTool(name, { packaged: app.isPackaged }))
 }
 
 function readVersion(binary, argument = '-version') {
@@ -248,7 +234,7 @@ function makeThumbnail(mediaPath, ffmpegPath) {
 
 function getPosterUrl(filePath, ffmpegPath) {
   if (!ffmpegPath) return null
-  const clean = filePath.replace(/\?/g, '').replace(/#/g, '')
+  const clean = filePath
   const key = sha(clean)
   thumbnailRoots.add(path.dirname(clean))
   return `videome-frame://thumbnail?path=${encodeURIComponent(clean)}&key=${key}`
@@ -285,7 +271,7 @@ app.whenReady().then(() => {
   protocol.handle('videome-media', async (request) => {
     try {
       const url = new URL(request.url)
-      const assetPath = decodeURIComponent(url.searchParams.get('path') || url.pathname)
+      const assetPath = url.searchParams.get('path') || decodeURIComponent(url.pathname)
       if (!validateContainedPath(assetPath, thumbnailRoots)) {
         return new Response('Forbidden', { status: 403 })
       }
@@ -618,6 +604,22 @@ function safeProjectBase() {
   return app.getPath('documents')
 }
 
+ipcMain.handle('videome:storage-locations', () => ({
+  dataDirectory: app.getPath('userData'),
+  defaultProjectDirectory: safeProjectBase(),
+  platform: process.platform,
+}))
+
+ipcMain.handle('videome:show-project-in-folder', async (_event, filePath) => {
+  try {
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== '.videome') throw new Error('请先保存工程文件。')
+    const resolved = await fs.realpath(filePath)
+    if (!(await fs.stat(resolved)).isFile()) throw new Error('工程文件不存在。')
+    shell.showItemInFolder(resolved)
+    return { ok: true }
+  } catch (error) { return { ok: false, reason: error.message } }
+})
+
 ipcMain.handle('videome:open-project', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -694,7 +696,7 @@ ipcMain.handle('videome:export-frame', async (_event, { asset, time, width, heig
   const w = Math.max(2, Math.round((Number(width) || 1920) / 2) * 2)
   const h = Math.max(2, Math.round((Number(height) || 1080) / 2) * 2)
   const videoFilters = [`scale=${w}:${h}:force_original_aspect_ratio=decrease`, `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`]
-  if (subtitle?.text?.trim()) videoFilters.push(`drawtext=fontfile='/System/Library/Fonts/Helvetica.ttc':text='${require('./export.cjs').escapeFilterString(subtitle.text)}':fontcolor=white:fontsize=${Math.max(18, Number(subtitle.fontSize) || 42)}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-text_h-${Math.max(24, Number(subtitle.bottomPadding) || 90)}`)
+  if (subtitle?.text?.trim()) videoFilters.push(`drawtext=fontfile=${filterPath(fontResources({ packaged: app.isPackaged }).fontFile)}:text='${require('./export.cjs').escapeFilterString(subtitle.text)}':fontcolor=white:fontsize=${Math.max(18, Number(subtitle.fontSize) || 42)}:borderw=3:bordercolor=black:x=(w-text_w)/2:y=h-text_h-${Math.max(24, Number(subtitle.bottomPadding) || 90)}`)
   args.push('-vf', videoFilters.join(','), outputPath)
 
   return new Promise((resolve) => {
@@ -732,10 +734,8 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
   if (!ffmpegPath || !ffprobePath) return { ok: false, reason: '导出需要已安装的 FFmpeg 和 ffprobe。请先安装 FFmpeg 并重启应用。' }
 
   const size = Number(settings.expectedSizeBytes || 0)
-  const free = Number((await fs.statfs(app.getPath('movies'))).bavail) * Number((await fs.statfs(app.getPath('movies'))).bsize)
-  if (size && free > 0 && free < size * 1.16) return { ok: false, reason: `导出目标磁盘空间不足：约需 ${(size / 1024 ** 3).toFixed(2)} GB。` }
 
-  const defaultPath = path.join(app.getPath('movies'), `${settings.fileName || project.name || 'Videome'}-export.${settings.format}`)
+  const defaultPath = path.join(app.getPath('videos'), `${projectFileName(settings.fileName || project.name || 'Videome')}-export.${settings.format}`)
   const save = await dialog.showSaveDialog({
     defaultPath,
     filters: [{ name: String(settings.format || 'mp4').toUpperCase(), extensions: [String(settings.format || 'mp4')] }],
@@ -744,6 +744,8 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
 
   const format = String(settings.format || 'mp4').toLowerCase()
   const outputPath = save.filePath.toLowerCase().endsWith(`.${format}`) ? save.filePath : `${save.filePath}.${format}`
+  const disk = await fs.statfs(path.dirname(outputPath))
+  if (size && Number(disk.bavail) * Number(disk.bsize) < size * 1.16) return { ok: false, reason: '导出目标磁盘空间不足。' }
   const temporaryPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.${Date.now()}.partial.${format}`)
   const subtitles = project.subtitle?.enabled === false ? [] : (project.subtitle?.cues || []).filter((cue) => cue.text?.trim() && Number(cue.end) > Number(cue.start))
   const subtitlePath = subtitles.length ? path.join(os.tmpdir(), `videome-${crypto.randomUUID()}.ass`) : null
@@ -757,7 +759,7 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
     const script = [
       '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${Number(project.frameSize?.width || 1920)}`, `PlayResY: ${height}`, 'WrapStyle: 2', 'ScaledBorderAndShadow: yes', '',
       '[V4+ Styles]', 'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-      `Style: ${styleName},PingFang SC,${fontSize},&H00FFFFFF,&H0000FFFF,&H0016171B,&H82000000,0,0,0,0,100,100,0,0,1,3,0.5,2,60,60,${marginV},1`, '',
+      `Style: ${styleName},${fontResources().fontFamily},${fontSize},&H00FFFFFF,&H0000FFFF,&H0016171B,&H82000000,0,0,0,0,100,100,0,0,1,3,0.5,2,60,60,${marginV},1`, '',
       '[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
       ...subtitles.map((cue) => {
         const totalCentiseconds = (seconds) => Math.round(Number(seconds) * 100)
@@ -777,7 +779,7 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
 
   let plan
   try {
-    plan = buildExportArguments({ ...settings, preset: settings.preset, format, project }, temporaryPath, subtitlePath)
+    plan = buildExportArguments({ ...settings, preset: settings.preset, format, project }, temporaryPath, subtitlePath, fontResources({ packaged: app.isPackaged }))
   } catch (error) {
     if (subtitlePath) await fs.rm(subtitlePath, { force: true })
     return { ok: false, reason: error.message }
@@ -794,87 +796,114 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
     let lastSize = null
     let lastGrowth = Date.now()
 
-    exportProcess = spawn(ffmpegPath, plan.args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-    activeJobs.add(exportProcess)
+    let retried = false
+    let settled = false
+    const settle = (result) => { if (!settled) { settled = true; resolve(result) } }
+    const launch = () => {
+      exportProcess = spawn(ffmpegPath, plan.args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+      activeJobs.add(exportProcess)
 
-    const report = (key, value) => {
-      if (key === 'out_time_ms') {
-        const progress = Math.max(0, Math.min(99, Number(value) / 10_000 / plan.duration * 100))
-        sendProgress({ percent: progress, elapsed: Math.round((Date.now() - new Date(startedAt).getTime()) / 1000), output: outputPath })
-      } else if (key === 'progress' && value === 'end') {
-        sendProgress({ percent: 99.5, output: outputPath })
-      }
-    }
-
-    const handleStdout = (chunk) => {
-      pendingOutput += chunk.toString()
-      const lines = pendingOutput.split(/\r?\n/)
-      pendingOutput = lines.pop() || ''
-      for (const line of lines) {
-        const index = line.indexOf('=')
-        if (index > 0) report(line.slice(0, index), line.slice(index + 1))
-      }
-    }
-
-    exportProcess.stdout.on('data', handleStdout)
-    exportProcess.stderr.on('data', (chunk) => { errors = `${errors}${chunk.toString()}`.slice(-12000) })
-    sendProgress({ percent: 0, output: outputPath })
-
-    const watchdog = setInterval(async () => {
-      try {
-        const sizeNow = (await fs.stat(temporaryPath)).size
-        if (sizeNow > lastSize) {
-          lastSize = sizeNow
-          lastGrowth = Date.now()
-          sendProgress({ percent: 1, indeterminate: true, output: outputPath, size: sizeNow })
-        } else if (Date.now() - lastGrowth > 150000) {
-          exportProcess?.kill('SIGTERM')
+      const report = (key, value) => {
+        if (key === 'out_time_ms') {
+          const progress = Math.max(0, Math.min(99, Number(value) / 10_000 / plan.duration * 100))
+          sendProgress({ percent: progress, elapsed: Math.round((Date.now() - new Date(startedAt).getTime()) / 1000), output: outputPath })
+        } else if (key === 'progress' && value === 'end') {
+          sendProgress({ percent: 99.5, output: outputPath })
         }
-      } catch {
-        // The output has not been created yet, or the encoder has already exited.
       }
-    }, 15000)
 
-    exportProcess.on('error', async (error) => {
-      clearInterval(watchdog)
-      if (subtitlePath) await fs.rm(subtitlePath, { force: true })
-      await fs.rm(temporaryPath, { force: true })
-      activeJobs.delete(exportProcess)
-      exportProcess = null
-      resolve({ ok: false, reason: error.message })
-    })
+      const handleStdout = (chunk) => {
+        pendingOutput += chunk.toString()
+        const lines = pendingOutput.split(/\r?\n/)
+        pendingOutput = lines.pop() || ''
+        for (const line of lines) {
+          const index = line.indexOf('=')
+          if (index > 0) report(line.slice(0, index), line.slice(index + 1))
+        }
+      }
 
-    exportProcess.on('close', async (code) => {
-      clearInterval(watchdog)
-      const completedJob = exportProcess
-      activeJobs.delete(completedJob)
-      exportProcess = null
-      if (subtitlePath) await fs.rm(subtitlePath, { force: true })
+      exportProcess.stdout.on('data', handleStdout)
+      exportProcess.stderr.on('data', (chunk) => { errors = `${errors}${chunk.toString()}`.slice(-12000) })
+      sendProgress({ percent: 0, output: outputPath })
 
-      if (code === 0) {
+      const watchdog = setInterval(async () => {
         try {
-          await fs.rename(temporaryPath, outputPath)
-          const verification = await probeMedia(outputPath, ffprobePath)
-          if (!verification.streams.some((stream) => stream.codec_type === 'video')) {
-            await fs.rm(outputPath, { force: true })
-            resolve({ ok: false, reason: '導出文件没有可读取的视频流。' })
+          const sizeNow = (await fs.stat(temporaryPath)).size
+          if (sizeNow > lastSize) {
+            lastSize = sizeNow
+            lastGrowth = Date.now()
+            sendProgress({ percent: 1, indeterminate: true, output: outputPath, size: sizeNow })
+          } else if (Date.now() - lastGrowth > 150000) {
+            exportProcess && (exportProcess.videomeCancelled = true, stopChild(exportProcess))
+          }
+        } catch {
+          // The output has not been created yet, or the encoder has already exited.
+        }
+      }, 15000)
+
+      const thisProcess = exportProcess
+      let spawnError
+      exportProcess.on('error', (error) => { spawnError = error })
+      /* cleanup is performed exactly once by close */
+      exportProcess.on('close', async (code) => {
+        if (settled) return
+        try {
+          const completedJob = thisProcess
+          activeJobs.delete(completedJob)
+          if (code !== 0 && !retried && !completedJob.videomeCancelled && !spawnError && /videotoolbox$/.test(plan.encoder || '') && hardwareFailure(new Error(errors))) {
+            retried = true
+            clearInterval(watchdog)
+            await fs.rm(temporaryPath, { force: true })
+            plan = buildExportArguments({ ...settings, format, project }, temporaryPath, subtitlePath, { ...fontResources({ packaged: app.isPackaged }), encoder: encoderFor(settings.videoCodec, process.platform, true) })
+            errors = ''; pendingOutput = ''; lastGrowth = Date.now(); lastSize = null
+            launch()
             return
           }
-          sendProgress({ percent: 100, output: outputPath })
-          resolve({ ok: true, path: outputPath, duration: Number(verification.format.duration || 0), streams: verification.streams.length, startedAt })
+          exportProcess = null
+          if (spawnError) {
+            const error = spawnError
+            clearInterval(watchdog)
+            if (subtitlePath) await fs.rm(subtitlePath, { force: true })
+            await fs.rm(temporaryPath, { force: true })
+            settle({ ok: false, reason: error.message })
+            return
+          }
+          clearInterval(watchdog)
+          if (subtitlePath) await fs.rm(subtitlePath, { force: true })
+
+          if (code === 0) {
+            try {
+              await fs.rename(temporaryPath, outputPath)
+              const verification = await probeMedia(outputPath, ffprobePath)
+              if (!verification.streams.some((stream) => stream.codec_type === 'video')) {
+                await fs.rm(outputPath, { force: true })
+                settle({ ok: false, reason: '導出文件没有可读取的视频流。' })
+                return
+              }
+              sendProgress({ percent: 100, output: outputPath })
+              settle({ ok: true, path: outputPath, duration: Number(verification.format.duration || 0), streams: verification.streams.length, encoder: plan.encoder, startedAt })
+            } catch (error) {
+              await fs.rm(outputPath, { force: true })
+              settle({ ok: false, reason: `导出文件验证未通过：${error.message}` })
+            }
+          } else {
+            await fs.rm(temporaryPath, { force: true })
+            const issue = errors.split(/\r?\n/).filter((line) => /error|invalid|unable|not found|failed|unrecognized|impossible|no such|unsupported/i.test(line)).at(-1)
+            settle({ ok: false, reason: issue?.replace(/^\[[^\]]+\]\s*/, '').trim() || `FFmpeg 处理失败 (exit ${code})` })
+          }
         } catch (error) {
-          await fs.rm(outputPath, { force: true })
-          resolve({ ok: false, reason: `导出文件验证未通过：${error.message}` })
+          clearInterval(watchdog)
+          activeJobs.delete(thisProcess)
+          exportProcess = null
+          await Promise.all([temporaryPath, subtitlePath].filter(Boolean).map((file) => fs.rm(file, { force: true }).catch(() => {})))
+          settle({ ok: false, reason: error.message })
         }
-      } else {
-        await fs.rm(temporaryPath, { force: true })
-        const issue = errors.split(/\r?\n/).filter((line) => /error|invalid|unable|not found|failed|unrecognized|impossible|no such|unsupported/i.test(line)).at(-1)
-        resolve({ ok: false, reason: issue?.replace(/^\[[^\]]+\]\s*/, '').trim() || `FFmpeg 处理失败 (exit ${code})` })
-      }
-    })
+      })
+    }
+    launch()
   })
   } finally {
     exportGate.release('ordinary')
@@ -884,7 +913,8 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
 
 ipcMain.handle('videome:cancel-export', () => {
   if (!exportProcess) return false
-  exportProcess.kill('SIGTERM')
+  exportProcess.videomeCancelled = true
+  stopChild(exportProcess)
   return true
 })
 
@@ -928,7 +958,7 @@ app.on('before-quit', (event) => {
   if (finishedShutdown || !singleInstanceLock) return
   event.preventDefault()
   backgroundLane.stopping = true
-  for (const job of activeJobs) job.kill('SIGTERM')
+  for (const job of activeJobs) { job.videomeCancelled = true; stopChild(job) }
   void batchManager.then((service) => service.shutdown()).finally(() => { finishedShutdown = true; app.quit() })
 })
 

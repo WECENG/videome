@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('videome', {
   saveProject: (payload) => ipcRenderer.invoke('videome:save-project', payload),
   saveProjectFile: (payload) => ipcRenderer.invoke('videome:write-project', payload),
   chooseProjectLocation: (payload) => ipcRenderer.invoke('videome:choose-project-location', payload),
+  getStorageLocations: () => ipcRenderer.invoke('videome:storage-locations'),
+  showProjectInFolder: (filePath) => ipcRenderer.invoke('videome:show-project-in-folder', filePath),
   exportMedia: (payload) => ipcRenderer.invoke('videome:export', payload),
   cancelExport: () => ipcRenderer.invoke('videome:cancel-export'),
   openPreview: (asset) => ipcRenderer.invoke('videome:open-preview', asset),

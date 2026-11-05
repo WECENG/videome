@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const crypto = require('node:crypto')
+const { syncDirectory, replaceFile } = require('../filesystem.cjs')
 
 async function atomicJson(target, data, backup = true) {
   await fs.mkdir(path.dirname(target), { recursive: true })
@@ -17,9 +18,8 @@ async function atomicJson(target, data, backup = true) {
       catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error }
       if (validPrevious) await fs.copyFile(target, `${target}.bak`)
     }
-    await fs.rename(temporary, target)
-    const directory = await fs.open(path.dirname(target), 'r')
-    try { await directory.sync() } finally { await directory.close() }
+    await replaceFile(temporary, target)
+    await syncDirectory(path.dirname(target))
   } finally { await fs.rm(temporary, { force: true }) }
 }
 
@@ -38,7 +38,7 @@ class JobStore {
         const rows = [['index', 'status', 'duration', 'output', 'signature', 'encoder', 'error'], ...snapshot.items.map((item) => [item.index, item.status, item.verification?.duration, item.outputPath, item.signature, item.encoder, item.error])]
         const target = path.join(snapshot.outputDirectory, 'batch-manifest.csv')
         const temporary = `${target}.${crypto.randomUUID()}.tmp`
-        try { await fs.writeFile(temporary, '\uFEFF' + rows.map((row) => row.map(quote).join(',')).join('\n')); await fs.rename(temporary, target) }
+        try { await fs.writeFile(temporary, '\uFEFF' + rows.map((row) => row.map(quote).join(',')).join('\n')); await replaceFile(temporary, target) }
         finally { await fs.rm(temporary, { force: true }) }
       }
     })

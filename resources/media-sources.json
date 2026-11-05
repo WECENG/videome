@@ -1,0 +1,17 @@
+{
+  "windows": {
+    "version": "9.0.2",
+    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip",
+    "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "source": "https://github.com/FFmpeg/FFmpeg/tree/946fcce07b",
+    "license": "GPL-3.0-or-later",
+    "requiredEncoders": ["libx264", "libx265", "aac", "libvpx-vp9", "libopus", "ffv1"]
+  },
+  "font": {
+    "version": "Sans2.004",
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+    "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+    "licenseUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE",
+    "licenseSha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+  }
+}

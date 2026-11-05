@@ -1,4 +1,5 @@
 const { spawn } = require('node:child_process')
+const { terminateTree } = require('../processes.cjs')
 
 const child = spawn(process.argv[2], process.argv.slice(3), { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
 let forcedExit
@@ -10,11 +11,12 @@ child.stderr.pipe(process.stderr)
 function stop() {
   if (completed) return
   forcedExit = true
-  child.kill('SIGTERM')
-  timer ||= setTimeout(() => child.kill('SIGKILL'), 4000)
+  terminateTree(child)
+  timer ||= setTimeout(() => terminateTree(child, true), 4000)
 }
 
 process.on('disconnect', stop)
+process.on('message', (message) => { if (message?.type === 'stop') stop() })
 process.on('SIGTERM', stop)
 process.on('SIGINT', stop)
 child.on('error', (error) => { process.stderr.write(error.message); process.exitCode = 1 })

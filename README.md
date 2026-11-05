@@ -1,107 +1,119 @@
 # Videome
 
-Videome 是一款本地优先（local-first）的 AI 辅助视频创作工具。它使用 React + Vite 构建编辑界面，以 Electron 提供桌面能力，并通过本机 FFmpeg/FFprobe 完成媒体探测、预览、转码与导出。
+Videome 是一款本地视频剪辑与批量混剪桌面工具，使用 React、Vite、Electron 和 FFmpeg/ffprobe。源素材、工程和渲染任务在本机处理。
 
-> 当前版本：`0.1.0` · Preview
+> 当前版本：`0.1.0 Preview` · 文档核对日期：2026-11-05
 
-## 特性
+## 当前状态
 
-- **素材库**：导入视频、音频和图片，记录媒体元数据，支持搜索、批量选择和快速加入时间线。
-- **多轨时间线**：视频、画面叠加、图文、字幕、原声和背景音乐轨道；支持拖放、移动、裁切、分割、删除、波纹删除、轨道锁定与静音。
-- **选中顺序编排**：按素材库中的选择顺序，将多个素材从左到右连续加入轨道。
-- **本地预览**：桌面版通过受控的 `videome-media://` 协议读取本地媒体；浏览器预览使用 Vite 本地媒体服务。
-- **字幕工作流**：手工编辑字幕、导入/导出 SRT，并在导出时烧录字幕。
-- **配乐与混音**：导入已授权的本地音乐，支持循环、淡入淡出、音量和人声自动避让参数。
-- **成片导出**：支持 H.264、HEVC、FFV1，MP4、MOV、MKV、WebM，以及原码流保留模式（有严格条件限制）。
-- **批量混剪**：长视频镜头对齐切片、固定种子随机重组、批次内去重、1–8 路受控并发，用户可配置每批生成 1–1000 条，支持暂停与断点恢复，以及原始切片代表工程。详见 [批量混剪说明](docs/BATCH-MIX.md)。
-- **本地工程**：工程保存为 `.videome` 文件，自动保存和素材清单保存在本机，不上传源媒体。
+| 平台 | 目标与产物 | 验证状态 |
+| --- | --- | --- |
+| macOS Apple Silicon | macOS 15.0+；`.app`、`.dmg`、App `.zip` | 本机 macOS 26 开发版及安装版已验证；macOS 15 实机待验收 |
+| Windows x64 | NSIS 安装版 `.exe`、Portable 免安装 `.exe` | 适配和手动构建工作流已提供；Windows CI 构建及人工操作待执行 |
 
-## 快速开始
+目前交付内部测试包：Mac 使用 ad-hoc 本地签名，未做 Developer ID 签名或公证；Windows 未配置发行签名。Intel Mac、Windows ARM、32 位、商店发布和自动更新不在当前交付范围。具体证据见[双平台实现与验收记录](docs/CROSS-PLATFORM-IMPLEMENTATION-REPORT.md)。
 
-### 环境要求
+## 主要功能
 
-- Node.js 18+（推荐当前 LTS）
-- npm 9+
-- macOS 运行桌面版时推荐安装 Homebrew FFmpeg：
+- **工程管理**：无恢复记录时进入空白工程；项目菜单提供新建、打开、另存为和恢复切换前工程。工程位置可显示完整路径、复制路径并在 Finder / 文件夹中定位。
+- **素材与时间线**：导入视频、音频和图片，支持搜索、多选排序、拖放、裁切、分割、波纹删除、多轨叠加，以及视频原声联动。
+- **本地预览**：原片预览、缩略图和视频帧；Chromium 无法解码时，可按需生成 H.264 兼容代理。
+- **字幕与配乐**：手工字幕、SRT 导入导出及烧录；导入本地音乐，支持音量、循环、淡入淡出和人声自动避让。
+- **普通导出**：H.264 / HEVC 高质量导出、FFV1 无损 MKV、VP9 / Opus WebM，以及符合条件的单片段原码流保留。
+- **批量混剪**：一个长视频自动切片、随机重组为独立 MP4；用户填写 `1–1000` 条，支持固定种子、序列去重、受控并发、暂停、取消、失败重试和中断恢复。任意成功结果可重建为原始切片工程。
 
-```bash
-brew install ffmpeg
-```
+App 不附带海岛视频或音乐曲目。“项目 → 查看界面示例”只展示时间线布局，明确标注没有源文件。自动语音识别尚未接入推理服务，配乐推荐是本地元数据规则排序，详见[功能与边界](docs/FEATURES.md)。
 
-桌面版会寻找 `ffmpeg` 和 `ffprobe`。开发环境常用路径包括 `/opt/homebrew/bin`、`/usr/local/bin` 和 `/usr/bin`；macOS 打包前自动收集工具及非系统动态库并改写为应用内相对依赖。
+## 开始使用
 
-### 安装依赖
+安装包用户可直接运行应用，无需安装 Node.js、FFmpeg 或 Homebrew。Mac 使用 DMG 安装或解压 App ZIP；Windows 安装版与 Portable 的操作步骤见[人工验收指南](docs/CROSS-PLATFORM-ACCEPTANCE.md)。
 
-```bash
+1. 从空白工程导入自己的素材，双击素材或拖入时间线。
+2. 在顶部修改项目名称，点击“保存”选择 `.videome` 的位置；以后可从“工程位置”找到文件。
+3. 常规编辑从“导出成片”输出；批量任务从右上角“批量混剪”进入，填写数量并先分析再生成。
+
+`.videome` 保存工程结构和素材路径，不复制源媒体。导入文件仍在原位置；本机恢复缓存、工程文件和成片输出目录各自独立。已有缓存会恢复上次内容，新建空白工程会保留素材库，并保留一份切换前工程快照。
+
+## 本地开发
+
+使用 Node.js **24.x** 和 npm，在 macOS arm64 或 Windows x64 执行：
+
+```sh
 npm ci
-```
-
-### 启动桌面开发环境
-
-```bash
+npm run media:prepare
+npm run media:check
 npm run desktop:dev
 ```
 
-该命令会启动 Vite（`127.0.0.1:5173`）并等待服务就绪后启动 Electron。
+`media:prepare` 按版本及 SHA-256 清单准备当前平台 FFmpeg、ffprobe 和导出字体，需要联网。Mac 还需要 Xcode Command Line Tools 中的系统构建工具。桌面启动器使用 `127.0.0.1:5173`，退出时清理其子进程。
 
-### 启动浏览器预览
+浏览器界面开发使用 `npm run dev`，地址为 `http://127.0.0.1:4179`。该模式只提供受限的本地媒体 API 和部分导出回退，不支持桌面工程文件操作或批量队列；浏览器与 Electron 的恢复缓存也不共用。
 
-```bash
-npm run dev
+完整环境准备、资源导入和排错见[开发与交付](docs/DEPLOYMENT.md)。
+
+## 检查与打包
+
+```sh
+npm test
+npm run build
+npm run dist:mac
+npm run verify:package
 ```
 
-浏览器预览运行在 `127.0.0.1:4179`。它适合界面开发和没有 Electron 的快速体验；文件选择器、桌面工程保存、原生导出等能力以桌面版为准。
-
-## 常用命令
+Windows 原生构建将 `dist:mac` 换为 `dist:win`。打包前先完成 `media:prepare`；`dist:*` 会检查并使用已有媒体资源，不自动重新下载。产物在 `release/`，Vite 静态资源在 `dist/`。
 
 | 命令 | 用途 |
 | --- | --- |
-| `npm ci` | 按锁文件安装依赖 |
-| `npm run desktop:dev` | 启动 Electron + Vite 桌面开发环境 |
-| `npm run dev` | 启动浏览器本地预览 |
-| `npm test` | 运行 Vitest 单元测试与导出集成测试 |
-| `npm run build` | 构建 Vite 静态资源到 `dist/` |
-| `npm run dist:mac` | 构建 Vite 并生成 macOS Electron 目录包 |
+| `npm run media:prepare` | 准备当前平台锁定的媒体工具与字体；`bundle:media` 是其别名 |
+| `npm run media:check` | 检查媒体架构、能力、字体摘要和 Mac 最低系统版本 |
+| `npm run desktop:dev` | 启动 Vite 与 Electron 开发桌面 |
+| `npm run dev` / `npm start` | 启动 4179 浏览器预览服务 |
+| `npm run desktop` | 仅启动 Electron；开发模式需先有 5173 服务 |
+| `npm test` | 运行领域、工程、媒体、队列和恢复测试；需要 FFmpeg/ffprobe |
+| `npm run build` | 生成 `dist/` Web 资源 |
+| `npm run dist:mac` | 原生构建 arm64 App、DMG 和 ZIP |
+| `npm run dist:win` | 原生构建 x64 NSIS 和 Portable |
+| `npm run verify:package` | 验证包内模块、字体与实际转码，生成构建信息和摘要 |
+| `npm run acceptance:fixtures` | 生成供人工验收使用的 90 秒测试素材 |
+| `npm run diagnostics` | 收集本机环境及批次诊断到 `output/diagnostics.json` |
 
-## 文档
-
-- [功能说明](docs/FEATURES.md)
-- [开发与部署](docs/DEPLOYMENT.md)
-- [架构与数据流](docs/ARCHITECTURE.md)
+GitHub Actions 提供手动触发的 **Desktop internal test packages** 工作流，分别在 Mac 和 Windows runner 构建，只上传 Artifacts，不自动发布 Release。工作流已提供不代表远程构建或人工验收已经通过。
 
 ## 项目结构
 
 ```text
-.
-├── electron/
-│   ├── main.cjs       # Electron 主进程、IPC、本地媒体协议、导出
-│   ├── preload.cjs    # contextBridge 安全 API
-│   ├── export.cjs     # FFmpeg 导出参数与能力校验
-│   ├── preview.cjs    # 预览代理参数
-│   └── project.cjs    # .videome 工程读写与规范化
-├── src/
-│   ├── main.jsx       # React 编辑器界面与交互
-│   ├── domain.js      # 时间线、素材和导出领域逻辑
-│   └── styles.css     # 编辑器样式
-├── public/            # 静态资源
-├── index.html         # Vite 入口
-└── package.json       # 脚本、依赖和 Electron Builder 配置
+src/                    React 编辑器、批量面板、领域函数、工程会话恢复
+  main.jsx              编辑器入口与工程操作
+  BatchMixPanel.jsx     批量混剪配置、进度与结果
+  project-session.js    空白工程、恢复缓存与旧缓存读取
+electron/               主进程、preload、工程/媒体/平台运行模块
+  batch/                规划、媒体执行、队列、持久化与 IPC
+scripts/                开发启动、媒体准备、打包、诊断与验收脚本
+resources/              媒体锁文件、字体及第三方声明
+.github/workflows/      手动双平台构建工作流
+docs/                   使用、架构、部署与验收文档
+dist/                   Web 构建产物（Git 忽略）
+media-bin/              当前平台媒体工具（Git 忽略）
+release/                桌面安装包与构建报告（Git 忽略）
+output/                 下载缓存、测试素材、截图和验收结果（Git 忽略）
 ```
 
-## 隐私与媒体安全
+## 文档索引
 
-- 源视频、音频、图片和字幕默认只在本机读取。
-- Electron 主进程通过受控协议和已授权路径读取媒体，避免渲染进程直接获得 Node.js 能力。
-- 预览代理、缩略图、视频帧等缓存写入系统缓存目录，不会修改原始媒体。
-- 导出使用临时文件，完成验证后再替换为最终文件；失败时清理临时文件。
+| 文档 | 内容 |
+| --- | --- |
+| [功能说明](docs/FEATURES.md) | 工程入口、素材、剪辑、字幕、导出及快捷键 |
+| [批量混剪](docs/BATCH-MIX.md) | 参数、并发、去重、输出和恢复 |
+| [开发与交付](docs/DEPLOYMENT.md) | 环境、媒体依赖、构建、CI 与排错 |
+| [架构与数据流](docs/ARCHITECTURE.md) | 模块边界、IPC、工程会话和任务持久化 |
+| [批量验收记录](docs/BATCH-MIX-ACCEPTANCE.md) | 两轮 200 条测试及性能限制 |
+| [双平台实现与验收记录](docs/CROSS-PLATFORM-IMPLEMENTATION-REPORT.md) | 已验证结果与待验收事项 |
+| [双平台人工验收](docs/CROSS-PLATFORM-ACCEPTANCE.md) | 安装包获取、逐步验收与诊断反馈 |
 
-## 当前预览版边界
+## 当前边界与许可证
 
-- 语音识别界面会检查本机 Whisper/whisper.cpp 配置；未安装模型时不会生成虚构字幕。
-- macOS 打包脚本当前生成 `dir` 目录包，未配置代码签名和公证。
-- `npm run build` 只构建 Web 资源，不等同于可独立运行的桌面安装包。
-- 生产发布前仍需针对目标平台补充安装包格式、签名、公证、自动更新和 CI 流程。
-
-## 许可证
-
-当前仓库尚未声明开源许可证。公开发布前，请根据项目计划补充 `LICENSE` 文件和第三方依赖归属说明。
+- 批量输出面向 SDR；检测到 HDR 会拒绝。完整 HDR / 10-bit 色彩管理尚未实现。
+- 批量目录必须支持独占写入、硬链接及空间查询；本轮面向本地 APFS / NTFS。网络盘、UNC 和 exFAT 批量输出不在支持范围。
+- `1–8` 路并发表示最大活动任务数，不保证 8 路最快；200 条是验收负载，不是固定生成数量。测试耗时不能直接推算其他素材或机器的性能。
+- 普通导出与批量导出的校验强度不同：批量会完整解码并核对帧数、时长和摘要；普通导出主要检查输出视频流。
+- 当前仓库没有项目级 `LICENSE`。第三方声明位于 [resources/THIRD-PARTY-NOTICES.txt](resources/THIRD-PARTY-NOTICES.txt)，字体许可和媒体来源、版本及摘要随资源保存。正式发行还需完成发行签名、公证及目标环境验收。

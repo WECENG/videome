@@ -6,6 +6,7 @@ const { EventEmitter } = require('node:events')
 const planning = require('./planning.cjs')
 const media = require('./media.cjs')
 const { JobStore, atomicJson } = require('./store.cjs')
+const { publishExclusive, checkOutputDirectory } = require('../filesystem.cjs')
 
 class ResourceGate {
   constructor() { this.owner = null }
@@ -104,6 +105,8 @@ class BatchMixManager extends EventEmitter {
     if (!path.isAbsolute(input.sourcePath || '') || !path.isAbsolute(input.outputDirectory || '')) throw new Error('请选择源视频和输出目录。')
     const base = await fs.realpath(input.outputDirectory)
     if (!(await fs.stat(base)).isDirectory()) throw new Error('输出目标必须为目录。')
+    if (process.platform === 'win32' && base.startsWith('\\\\')) throw new Error('首版批量输出请使用本地 NTFS 目录。')
+    await checkOutputDirectory(base)
     const sourcePath = await fs.realpath(input.sourcePath)
     const id = crypto.randomUUID()
     const outputDirectory = path.join(base, `Videome-${new Date().toISOString().replace(/[:.]/g, '-')}-${id.slice(0, 8)}`)
@@ -277,12 +280,7 @@ class BatchMixManager extends EventEmitter {
       item.status = 'publishing'
       await this.save(job)
       await this.hooks.beforePublish?.(job, item)
-      await fs.link(partial, item.outputPath)
-      const outputHandle = await fs.open(item.outputPath, 'r')
-      try { await outputHandle.sync() } finally { await outputHandle.close() }
-      const directoryHandle = await fs.open(job.outputDirectory, 'r')
-      try { await directoryHandle.sync() } finally { await directoryHandle.close() }
-      await fs.rm(partial, { force: true })
+      await publishExclusive(partial, item.outputPath)
       await this.hooks.afterPublish?.(job, item)
       item.status = 'completed'
       item.percent = 100

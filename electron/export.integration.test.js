@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir, copyFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
@@ -11,8 +11,9 @@ const execFileAsync = promisify(execFile)
 const require = createRequire(import.meta.url)
 const { buildExportArguments } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
-const ffmpeg = '/opt/homebrew/bin/ffmpeg'
-const ffprobe = '/opt/homebrew/bin/ffprobe'
+const { locateTool } = require('./runtime.cjs')
+const ffmpeg = locateTool('ffmpeg')
+const ffprobe = locateTool('ffprobe')
 let folder
 
 beforeAll(async () => {
@@ -30,6 +31,30 @@ afterAll(async () => {
 })
 
 describe('FFmpeg timeline export', () => {
+  it('exports Windows software codecs, Unicode fonts and escaped subtitle paths', async () => {
+    const special = path.join(folder, "素材 ' % [测试]")
+    await mkdir(special)
+    const input = path.join(special, '视频.mp4')
+    await copyFile(path.join(folder, 'source.mp4'), input)
+    const subtitlePath = path.join(special, "字幕 ' %.ass")
+    await writeFile(subtitlePath, createAss([{ start: 0, end: 1, text: '中文 English 123' }], { width: 320, height: 180 }))
+    const project = {
+      duration: 1, frameSize: { width: 320, height: 180 }, frameRate: { numerator: 30, denominator: 1 },
+      assets: [{ id: 'v', path: input, kind: 'video', audioCodec: 'aac' }],
+      tracks: [{ id: 'v', type: 'video' }, { id: 'title', type: 'graphics', order: 1 }],
+      clips: [{ id: 'v', assetId: 'v', kind: 'video', trackId: 'v', start: 0, duration: 1 }, { id: 't', kind: 'graphics', trackId: 'title', start: 0, duration: 1, text: '标题' }],
+      subtitle: { cues: [{ start: 0, end: 1, text: '中文 English 123' }] },
+    }
+    for (const [codec, encoder] of [['h264', 'libx264'], ['hevc', 'libx265']]) {
+      const output = path.join(special, `${codec}.mp4`)
+      const plan = buildExportArguments({ preset: 'high', format: 'mp4', videoCodec: codec, project }, output, subtitlePath, { encoder })
+      expect(plan.encoder).toBe(encoder)
+      await execFileAsync(ffmpeg, plan.args, { maxBuffer: 8e6 })
+      await execFileAsync(ffmpeg, ['-v', 'error', '-xerror', '-i', output, '-f', 'null', '-'])
+      const { stdout } = await execFileAsync(ffprobe, ['-v', 'error', '-show_streams', '-of', 'json', output])
+      expect(JSON.parse(stdout).streams.find((stream) => stream.codec_type === 'video').codec_name).toBe(codec)
+    }
+  }, 60000)
   it('generates an H.264 proxy that ffprobe can decode for browser playback', async () => {
     const input = path.join(folder, 'source.mp4')
     const proxy = path.join(folder, 'preview-proxy.mp4')

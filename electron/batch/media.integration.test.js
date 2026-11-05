@@ -8,8 +8,9 @@ const media = require('./media.cjs')
 const { normalizeOptions } = require('./planning.cjs')
 const { planSegments, planOutputs, buildRepresentativeProject } = require('./planning.cjs')
 const { buildExportArguments } = require('../export.cjs')
-const ffmpeg = '/opt/homebrew/bin/ffmpeg'
-const ffprobe = '/opt/homebrew/bin/ffprobe'
+const { locateTool } = require('../runtime.cjs')
+const ffmpeg = locateTool('ffmpeg')
+const ffprobe = locateTool('ffprobe')
 let folder
 let source
 beforeAll(async () => {

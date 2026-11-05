@@ -1,12 +1,12 @@
 export const defaultProject = {
   schemaVersion: 1,
-  name: '海岛慢游 · 夏日精选',
+  name: '未命名工程',
   projectDirectory: '',
   profile: '1920×1080 · 30 fps',
   frameRate: { numerator: 30, denominator: 1 },
   frameSize: { width: 1920, height: 1080 },
-  duration: 148,
-  playhead: 48.42,
+  duration: 60,
+  playhead: 0,
   assets: [],
   clips: [],
   tracks: [
@@ -19,16 +19,12 @@ export const defaultProject = {
   ],
   subtitle: {
     enabled: true,
-    text: '沿着海岸，寻找夏天的颜色。',
+    text: '',
     language: '简体中文',
     fontSize: 42,
     bottomPadding: 98,
     background: false,
-    cues: [
-      { id: 'caption-1', start: 46, end: 50.9, text: '沿着海岸，寻找夏天的颜色。', edited: true },
-      { id: 'caption-2', start: 53.2, end: 56.4, text: '也听见浪花写下的故事。', edited: false },
-      { id: 'caption-3', start: 89.1, end: 93.4, text: '把这一刻，留给风和海。', edited: false },
-    ],
+    cues: [],
   },
   history: [],
   exportSettings: { preset: 'high', format: 'mp4', videoCodec: 'h264', videoBitrateMbps: 12, audioBitrateKbps: 256 },
@@ -36,6 +32,18 @@ export const defaultProject = {
 
 export const sampleProject = {
   ...defaultProject,
+  name: '海岛慢游 · 界面示例',
+  duration: 148,
+  playhead: 0,
+  subtitle: {
+    ...defaultProject.subtitle,
+    text: '沿着海岸，寻找夏天的颜色。',
+    cues: [
+      { id: 'caption-1', start: 46, end: 50.9, text: '沿着海岸，寻找夏天的颜色。', edited: true },
+      { id: 'caption-2', start: 53.2, end: 56.4, text: '也听见浪花写下的故事。', edited: false },
+      { id: 'caption-3', start: 89.1, end: 93.4, text: '把这一刻，留给风和海。', edited: false },
+    ],
+  },
   clips: [
     { id: 'sample-1', trackId: 'video-main', assetId: 'sample-footage-1', name: '海岸晨光 · 航拍', start: 0, duration: 30, trimStart: 0, trimEnd: 30, sourceDuration: 30, color: 'lime', kind: 'video', hasAudio: true, previewColor: 'ocean' },
     { id: 'sample-2', trackId: 'video-main', assetId: 'sample-footage-2', name: '棕榈树影 · 片段 04', start: 32.2, duration: 21, trimStart: 0, trimEnd: 21, sourceDuration: 21, color: 'lime', kind: 'video', hasAudio: true, previewColor: 'palms' },
@@ -77,12 +85,7 @@ export const fileUrl = (source) => {
   if (!source) return null
   if (/^(?:https?:|data:|blob:|file:|videome:)/i.test(source)) return source
   const normalized = String(source).replace(/\\/g, '/')
-  const absolute = normalized.startsWith('/')
-    ? normalized
-    : /^[A-Za-z]:\//.test(normalized)
-      ? `/${normalized}`
-      : `/Users/${normalized}`
-  return `http://127.0.0.1:4179/__videome/media?path=${encodeURIComponent(absolute)}`
+  return `http://127.0.0.1:4179/__videome/media?path=${encodeURIComponent(normalized)}`
 }
 
 export const getPreviewUrl = (asset, previewAssets = []) => {
@@ -614,7 +617,7 @@ export const parseSubtitleFile = (content, extension = 'srt') => {
   return cues
 }
 
-export const createAss = (cues, { width = 1920, height = 1080, fontSize = 42, bottomPadding = 92, background = false, family = 'PingFang SC' } = {}) => {
+export const createAss = (cues, { width = 1920, height = 1080, fontSize = 42, bottomPadding = 92, background = false, family = 'Noto Sans CJK SC' } = {}) => {
   const playX = Math.max(1, Math.round(Number(width) || 1920))
   const playY = Math.max(1, Math.round(Number(height) || 1080))
   const size = Math.max(12, Math.round(Number(fontSize) * playY / 1080 || 42))

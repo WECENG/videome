@@ -1,3 +1,4 @@
+const { locateTool } = require('../electron/runtime.cjs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
@@ -10,13 +11,14 @@ async function main() {
   const [sourcePath, destination] = process.argv.slice(2)
   if (!sourcePath || !destination) throw new Error('Usage: node scripts/batch-acceptance.cjs SOURCE OUTPUT_DIRECTORY')
   await fs.mkdir(destination, { recursive: true })
-  const manager = new BatchMixManager({ root: path.join(destination, 'jobs'), ffmpeg: process.env.VIDEOME_FFMPEG || '/opt/homebrew/bin/ffmpeg', ffprobe: process.env.VIDEOME_FFPROBE || '/opt/homebrew/bin/ffprobe' })
+  const manager = new BatchMixManager({ root: path.join(destination, 'jobs'), ffmpeg: locateTool('ffmpeg'), ffprobe: locateTool('ffprobe') })
   const report = { startedAt: new Date().toISOString(), sourcePath, width: 640, height: 360, targetSeconds: 30, runs: [] }
   let peakRssKiB = 0
   const sampler = setInterval(async () => {
     try {
-      const { stdout } = await exec('ps', ['-axo', 'pid=,ppid=,rss='])
-      const processes = stdout.split('\n').map((line) => line.trim().split(/\s+/).map(Number))
+      const processes = process.platform === 'win32'
+        ? JSON.parse((await exec('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,WorkingSetSize | ConvertTo-Json -Compress'])).stdout).map((item) => [item.ProcessId, item.ParentProcessId, Number(item.WorkingSetSize) / 1024])
+        : (await exec('ps', ['-axo', 'pid=,ppid=,rss='])).stdout.split('\n').map((line) => line.trim().split(/\s+/).map(Number))
       const descendants = new Set([process.pid])
       for (let depth = 0; depth < 5; depth += 1) for (const [pid, parent] of processes) if (descendants.has(parent)) descendants.add(pid)
       const rss = processes.reduce((sum, [pid, _parent, memory]) => descendants.has(pid) ? sum + memory : sum, 0)

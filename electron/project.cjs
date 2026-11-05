@@ -2,6 +2,8 @@ const PROJECT_EXTENSION = '.videome'
 const crypto = require('node:crypto')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { safeFileName } = require('./runtime.cjs')
+const { replaceFile } = require('./filesystem.cjs')
 
 function normalizeProjectName(value) {
   const name = String(value ?? '').trim()
@@ -9,7 +11,7 @@ function normalizeProjectName(value) {
 }
 
 function projectFileName(value) {
-  return normalizeProjectName(value).replace(/[\\/\0]/g, '-')
+  return safeFileName(normalizeProjectName(value))
 }
 
 function withProjectExtension(value) {
@@ -89,7 +91,8 @@ async function writeProjectSnapshot(projectPath, project, { fileSystem = fs } = 
   try {
     await fileSystem.mkdir(path.dirname(projectPath), { recursive: true })
     await fileSystem.writeFile(temporaryPath, JSON.stringify({ ...snapshot, savedAt: new Date().toISOString() }, null, 2))
-    await fileSystem.rename(temporaryPath, projectPath)
+    if (fileSystem === fs) await replaceFile(temporaryPath, projectPath)
+    else await fileSystem.rename(temporaryPath, projectPath)
   } catch (error) {
     await fileSystem.rm(temporaryPath, { force: true }).catch(() => {})
     throw error

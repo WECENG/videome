@@ -8,13 +8,14 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 const require = createRequire(import.meta.url)
 const { BatchMixManager } = require('./manager.cjs')
 const media = require('./media.cjs')
+const { locateTool } = require('../runtime.cjs')
 let folder
 let source
 
 beforeAll(async () => {
   folder = await mkdtemp(path.join(os.tmpdir(), 'videome-crash-'))
   source = path.join(folder, 'source.mp4')
-  await media.run('/opt/homebrew/bin/ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=8', '-c:v', 'libx264', '-threads', '2', source])
+  await media.run(locateTool('ffmpeg'), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=320x180:r=30:d=8', '-c:v', 'libx264', '-threads', '2', source])
 }, 30000)
 afterAll(async () => { await rm(folder, { recursive: true, force: true }) })
 
@@ -26,8 +27,9 @@ for (const phase of ['beforeRender', 'duringVerify', 'beforePublish', 'afterPubl
     child.stderr.on('data', (chunk) => { errors += chunk.toString() })
     const [message] = await once(child, 'message')
     const [, signal] = await once(child, 'exit')
-    expect(signal, errors).toBe('SIGKILL')
-    const manager = new BatchMixManager({ root, ffmpeg: '/opt/homebrew/bin/ffmpeg', ffprobe: '/opt/homebrew/bin/ffprobe' })
+    if (process.platform !== 'win32') expect(signal, errors).toBe('SIGKILL')
+    else expect(message.jobId).toBeTruthy()
+    const manager = new BatchMixManager({ root, ffmpeg: locateTool('ffmpeg'), ffprobe: locateTool('ffprobe') })
     try {
       await manager.initialized
       const interrupted = await manager.get(message.jobId)
