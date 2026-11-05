@@ -51,6 +51,9 @@ async function fixture(extra = {}, count = 12) {
   managers.push(manager)
   const { jobId } = await manager.create({ sourcePath: source, outputDirectory: folder, count, width: 320, height: 180, concurrency: 4, alignScenes: false, seed: 'queue' })
   await waitFor(manager, jobId, (job) => job.status === 'ready')
+  // The ready status precedes the final manifest flush and analysis-lock release.
+  // Tests that mutate the job directly must wait for that lifecycle to finish.
+  await manager.analysisTail
   return { folder, source, manager, jobId, engine, counters: () => ({ peak, active, renders }) }
 }
 
