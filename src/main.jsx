@@ -558,6 +558,25 @@ function App() {
     setStatus(references.length ? `已移除素材及其 ${references.length} 个时间线片段；原文件未删除。` : `已从素材库移除「${asset.name}」；原文件未删除。`)
   }
 
+  function clearMediaLibrary() {
+    const current = projectRef.current
+    const libraryAssets = [...new Map([...assets, ...(current.assets || [])].map((asset) => [asset.id, asset])).values()]
+    if (!libraryAssets.length) return
+    const assetIds = new Set(libraryAssets.map((asset) => asset.id))
+    const nextProject = [...assetIds].reduce((next, assetId) => removeAssetReferences(next, assetId), current)
+    const removedClipCount = current.clips.length - nextProject.clips.length
+    if (!window.confirm(`确定清空素材库中的 ${libraryAssets.length} 个素材吗？${removedClipCount ? `同时移除时间线上的 ${removedClipCount} 个片段。` : ''}\n只移除本机库和工程引用，不会删除磁盘上的原始文件。此操作可撤销。`)) return
+
+    applyEdit('清空素材库', () => nextProject)
+    setAssets([])
+    updateSelectedAssetIds([])
+    updateSelectedClipIds(selectedClipIdsRef.current.filter((id) => nextProject.clips.some((clip) => clip.id === id)))
+    setAssetMenuId(null)
+    safeStorageWrite('videome-assets', nextProject.assets)
+    if (selectedId && !nextProject.clips.some((clip) => clip.id === selectedId)) setSelectedId(null)
+    setStatus(`已清空 ${libraryAssets.length} 个素材${removedClipCount ? `及 ${removedClipCount} 个时间线片段` : ''}；原文件未删除。`)
+  }
+
   async function copyAssetPath(asset) {
     if (!asset.path) {
       setStatus('该素材没有可用的本地文件路径。', 'info')
@@ -2292,7 +2311,7 @@ function App() {
           <>
             <div className="library-search"><Search size={14} /><input placeholder="搜索素材名称..." value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索素材" /><kbd>⌘ K</kbd></div>
             <button className="import-dropzone" onClick={() => openPicker()} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const paths = [...(event.dataTransfer.files || [])]; if (paths.length) handleBrowserFiles({ target: { files: paths, dataset: {}, value: '' } }) }}><span className="drop-icon"><Plus size={16} /></span><span>拖入文件或 <b>选择素材</b></span><small>视频 · 音频 · 图片</small></button>
-            <div className="asset-filter-row"><span>素材 <b>{filteredAssets.length}</b></span><button className="asset-batch-add" type="button" disabled={!selectedAssetIds.length} aria-label="按选中顺序加入轨道" title={selectedAssetIds.length ? `按选中顺序加入 ${selectedAssetIds.length} 个片段` : '先选择素材'} onClick={() => { setAssetMenuId(null); void addSelectedAssetsToTimeline() }}><Plus size={12} />加入轨道{selectedAssetIds.length ? <b>{selectedAssetIds.length}</b> : null}</button><button className="asset-sort-button" onClick={() => setStatus(`${assets.length} 个本地素材；源文件仅在你主动使用时读取。`, 'info')}>最近添加 <ChevronDown size={11} /></button></div>
+            <div className="asset-filter-row"><span>素材 <b>{filteredAssets.length}</b></span><button className="asset-batch-add" type="button" disabled={!selectedAssetIds.length} aria-label="按选中顺序入轨" title={selectedAssetIds.length ? `按选中顺序入轨 ${selectedAssetIds.length} 个片段` : '先选择素材'} onClick={() => { setAssetMenuId(null); void addSelectedAssetsToTimeline() }}><Plus size={12} />入轨{selectedAssetIds.length ? <b>{selectedAssetIds.length}</b> : null}</button><button className="asset-clear-button" type="button" disabled={!assets.length && !project.assets.length} title="清空全部素材（不会删除原文件）" onClick={clearMediaLibrary}><Trash2 size={11} />清空</button><button className="asset-sort-button" onClick={() => setStatus(`${assets.length} 个本地素材；源文件仅在你主动使用时读取。`, 'info')}>最近添加 <ChevronDown size={11} /></button></div>
             <div className="asset-list">{filteredAssets.map((asset, index) => renderMediaAsset(asset, index))}{!filteredAssets.length ? <div className="empty-library">{assets.length ? '没有找到匹配的素材。' : exampleMode ? '示例只有时间线布局，未附带视频或音乐文件。' : '尚未导入素材。导入后可双击或拖入时间线。'}</div> : null}</div>
             <div className="storage-card"><div className="storage-icon"><HardDiskIcon /></div><div className="storage-copy"><span>本地空间</span><small>素材不会上传至服务器</small></div><span className="storage-tag">LOCAL</span></div>
           </>
@@ -2628,7 +2647,7 @@ function App() {
       .map((id) => assets.find((item) => item.id === id) || projectRef.current.assets.find((item) => item.id === id))
       .filter(Boolean)
     if (!selectedAssets.length) {
-      setStatus('请先选择要加入轨道的素材。', 'info')
+      setStatus('请先选择要入轨的素材。', 'info')
       return
     }
 
@@ -2649,7 +2668,7 @@ function App() {
       duration: currentProject.duration,
       tracks: currentProject.tracks,
     })
-    applyEdit('按选中顺序加入轨道', (current) => ({
+    applyEdit('按选中顺序入轨', (current) => ({
       ...current,
       clips: result.clips,
       tracks: result.tracks,

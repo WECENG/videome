@@ -105,6 +105,9 @@ button:disabled { cursor: not-allowed !important; opacity: .38 !important; }
 .asset-filter-row .asset-batch-add:hover:not(:disabled) { border-color: #7fa78b; background: #e5f0e4; }
 .asset-filter-row .asset-batch-add:disabled { border-color: #e1e4dd; background: #f5f5f1; color: #b8bbb1; opacity: 1 !important; }
 .asset-filter-row .asset-batch-add b { margin-left: 1px; color: inherit; font-size: 8px; }
+.asset-filter-row .asset-clear-button { flex-shrink: 0; color: #b17a6d; }
+.asset-filter-row .asset-clear-button:hover:not(:disabled) { color: #a35d4e; }
+.asset-filter-row .asset-clear-button:disabled { color: #c9c6bc; cursor: default; }
 .asset-filter-row .asset-sort-button { flex-shrink: 0; }
 .asset-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 3px; overflow-y: auto; padding: 0 10px 7px; scrollbar-color: #ddd8ce transparent; scrollbar-width: thin; }
 .asset-card { position: relative; display: flex; min-height: 66px; flex-shrink: 0; align-items: center; gap: 9px; padding: 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; text-align: left; cursor: grab; transition: .17s ease; }
