@@ -465,7 +465,39 @@ export const moveClipWithLinked = (clips, clipId, start, trackId = null) => {
   })
 }
 
+const isSplitAudioDuplicate = (clip, parent) => clip?.kind === 'audio' && parent?.kind === 'audio'
+  && clip.trackId === parent.trackId && clip.assetId === parent.assetId && clip.path === parent.path
+  && Number(clip.start) === Number(parent.start) && Number(clip.duration) === Number(parent.duration)
+  && Number(clip.trimStart || 0) === Number(parent.trimStart || 0)
+  && Number(clip.trimEnd ?? Number(clip.trimStart || 0) + Number(clip.duration)) === Number(parent.trimEnd ?? Number(parent.trimStart || 0) + Number(parent.duration))
+
+export const repairSplitAudioDuplicates = (clips) => {
+  const byId = new Map()
+  for (const clip of clips) {
+    if (!byId.has(clip.id) || (byId.get(clip.id).linkedClipId === clip.id && clip.linkedClipId !== clip.id)) byId.set(clip.id, clip)
+  }
+  const duplicateIds = new Set()
+  const aliases = new Set()
+  for (const clip of clips) {
+    const parent = clip.linkedClipId && byId.get(clip.linkedClipId)
+    if (!isSplitAudioDuplicate(clip, parent)) continue
+    duplicateIds.add(parent.id)
+    duplicateIds.add(clip.id)
+    if (clip.id !== parent.id) aliases.add(clip.id)
+  }
+  if (!duplicateIds.size) return clips
+  const seen = new Set()
+  return clips.flatMap((clip) => {
+    if (!duplicateIds.has(clip.id)) return [clip]
+    if (aliases.has(clip.id) || seen.has(clip.id)) return []
+    seen.add(clip.id)
+    const canonical = byId.get(clip.id)
+    return [canonical.linkedClipId === canonical.id ? { ...canonical, linkedClipId: null, audioLinked: false } : canonical]
+  })
+}
+
 export const splitClips = (clips, playhead, trackIds) => {
+  const sourceClips = repairSplitAudioDuplicates(clips)
   const result = []
   const processed = new Set()
   const splitId = () => `clip-${globalThis.crypto?.randomUUID?.() || Date.now()}`
@@ -478,14 +510,35 @@ export const splitClips = (clips, playhead, trackIds) => {
     ]
   }
 
-  clips.forEach((clip) => {
+  sourceClips.forEach((clip) => {
     if (processed.has(clip.id)) return
-    const pair = clip.kind === 'audio' && clip.linkedClipId
-      ? [clips.find((candidate) => candidate.id === clip.linkedClipId), clip]
-      : [clip, clips.find((candidate) => candidate.linkedClipId === clip.id)].filter(Boolean)
-    const videoClip = pair.find((item) => item.kind === 'video') || clip
+    const parent = clip.kind === 'audio' && clip.linkedClipId
+      ? sourceClips.find((candidate) => candidate.id === clip.linkedClipId && candidate.kind === 'video')
+      : null
+    const companion = clip.kind === 'video'
+      ? sourceClips.find((candidate) => candidate.kind === 'audio' && candidate.linkedClipId === clip.id)
+      : null
+    const pair = parent ? [parent, clip] : companion ? [clip, companion] : [clip]
+    const videoClip = parent || clip
     const start = Number(videoClip.start)
     const boundary = playhead - start
+    const audioClip = pair.length > 1 ? pair.find((item) => item.kind === 'audio') : null
+    const editablePair = pair.filter((item) => trackIds.includes(item.trackId))
+    if (pair.length > 1 && editablePair.length === 1) {
+      const editableClip = editablePair[0]
+      const editableBoundary = playhead - editableClip.start
+      if (editableBoundary > 1 / 240 && editableBoundary < Number(editableClip.duration) - 1 / 240) {
+        const splitEditable = splitOne(editableClip, splitId()).map((item) => ({ ...item, linkedClipId: null, audioLinked: false }))
+        result.push(...pair.filter((item) => item.id !== editableClip.id), ...splitEditable)
+        pair.forEach((item) => processed.add(item.id))
+        return
+      }
+    }
+    if (!editablePair.length) {
+      result.push(...pair)
+      pair.forEach((item) => processed.add(item.id))
+      return
+    }
     const lockedPair = pair.some((item) => !trackIds.includes(item.trackId))
     const canSplit = !lockedPair && boundary > 1 / 240 && boundary < Number(videoClip.duration) - 1 / 240
     if (!canSplit) {
@@ -496,7 +549,6 @@ export const splitClips = (clips, playhead, trackIds) => {
 
     const secondVideoId = splitId()
     const splitVideo = splitOne(videoClip, secondVideoId)
-    const audioClip = pair.find((item) => item.kind === 'audio')
     if (audioClip) {
       const secondAudioId = splitId()
       const splitAudio = splitOne(audioClip, secondAudioId)
@@ -521,23 +573,32 @@ export const unlinkClipPair = (clips, clipId) => {
     : clip)
 }
 
-export const removeClip = (clips, id, ripple = false) => {
-  const removed = clips.find((clip) => clip.id === id)
-  if (!removed) return clips
-  const removeIds = new Set([id])
-  if (removed.linkedClipId) {
-    removeIds.add(removed.linkedClipId)
-    clips.filter((item) => item.linkedClipId === removed.linkedClipId).forEach((item) => removeIds.add(item.id))
+export const removeClip = (clips, id, ripple = false, tracks = []) => {
+  let selected = clips.find((clip) => clip.id === id)
+  const visited = new Set()
+  while (selected?.linkedClipId && !visited.has(selected.id)) {
+    visited.add(selected.id)
+    const parent = clips.find((clip) => clip.id === selected.linkedClipId)
+    if (!isSplitAudioDuplicate(selected, parent)) break
+    selected = parent
   }
-  const pairedClipId = removed.linkedClipId || removed.id
-  clips.filter((item) => item.linkedClipId === pairedClipId).forEach((item) => removeIds.add(item.id))
-  const filtered = clips.filter((clip) => !removeIds.has(clip.id))
+  const sourceClips = repairSplitAudioDuplicates(clips)
+  const removed = sourceClips.find((clip) => clip.id === selected?.id)
+  if (!removed) return clips
+  const lockedTrackIds = new Set(tracks.filter((track) => track.locked).map((track) => track.id))
+  if (lockedTrackIds.has(removed.trackId)) return clips
+  const removeIds = new Set([removed.id])
+  if (!removed.linkedClipId) sourceClips.filter((item) => item.linkedClipId === removed.id && !lockedTrackIds.has(item.trackId)).forEach((item) => removeIds.add(item.id))
+  const filtered = sourceClips.filter((clip) => !removeIds.has(clip.id)).map((clip) => removeIds.has(clip.linkedClipId)
+    ? { ...clip, linkedClipId: null, audioLinked: false }
+    : clip)
   if (!ripple) return filtered
 
   return filtered.map((clip) => {
+    if (lockedTrackIds.has(clip.trackId)) return clip
     const rippleSameTrack = clip.trackId === removed.trackId && clip.start >= removed.start + removed.duration - 1 / 240
-    const parent = removed.linkedClipId ? clips.find((candidate) => candidate.id === removed.linkedClipId) : removed
-    const rippleLinkedTrack = Boolean((parent?.audioLinked || removed.audioLinked) && parent?.assetId === clip.assetId && clip.kind === 'audio' && clip.start >= removed.start + removed.duration - 1 / 240)
+    const parent = removed.linkedClipId ? sourceClips.find((candidate) => candidate.id === removed.linkedClipId) : removed
+    const rippleLinkedTrack = Boolean(!removed.linkedClipId && (parent?.audioLinked || removed.audioLinked) && parent?.assetId === clip.assetId && clip.kind === 'audio' && clip.start >= removed.start + removed.duration - 1 / 240)
     return rippleSameTrack || rippleLinkedTrack ? { ...clip, start: Math.max(0, clip.start - removed.duration) } : clip
   })
 }

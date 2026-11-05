@@ -120,13 +120,17 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
     if ((format === 'mp4' || format === 'mov') && codec && !['h264', 'hevc', 'mpeg4'].includes(codec)) {
       throw new Error(`视频编码 ${codec} 无法直接写入 ${format.toUpperCase()}。请切换到 MKV 或重新编码。`)
     }
+    const linkedAudioClips = clips.filter((candidate) => candidate.kind === 'audio' && candidate.linkedClipId === clip.id)
+    const copySourceAudio = linkedAudioClips.length
+      ? audioClips.some(({ clip: audioClip }) => audioClip.linkedClipId === clip.id && Number(audioClip.volume ?? 0.82) > 0)
+      : !clip.suppressEmbeddedAudio && clip.audioLinked !== false && Number(clip.volume ?? 0.82) > 0
 
     return {
       args: [
         '-hide_banner', '-nostdin', '-y', '-progress', 'pipe:1', '-loglevel', 'error', '-i', asset.path,
         ...(Number(clip.trimStart) > 0 ? ['-ss', number(clip.trimStart)] : []),
         '-t', number(clip.duration), '-map', '0:v:0',
-        ...(audioClips.some(({ clip: audioClip }) => audioClip.linkedClipId === clip.id && Number(audioClip.volume ?? 0.82) > 0) ? ['-map', '0:a:0?'] : []),
+        ...(copySourceAudio ? ['-map', '0:a:0?'] : []),
         '-c', 'copy',
         ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []),
         '-f', format === 'mov' ? 'mov' : format, temporaryOutput,

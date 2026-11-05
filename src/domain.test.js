@@ -12,10 +12,12 @@ import {
   orderAssetsByIds,
   toggleOrderedSelection,
   moveClipWithLinked,
+  removeClip,
   parseSrt,
   removeAssetReferences,
   removeTrack,
   replaceAssetById,
+  repairSplitAudioDuplicates,
   repairPlaceholderDurationClips,
   resolveMediaDurationSeconds,
   splitClips,
@@ -155,6 +157,111 @@ describe('subtitle and timeline helpers', () => {
     expect(result[2].start).toBe(0)
     expect(result[3].start).toBe(4)
     expect(result[3].linkedClipId).toBe(result[1].id)
+  })
+
+  it('deletes only the selected split segment and its linked source audio', () => {
+    const clips = [
+      { id: 'video-first', kind: 'video', trackId: 'v', assetId: 'asset', start: 0, duration: 4, audioLinked: true },
+      { id: 'video-second', kind: 'video', trackId: 'v', assetId: 'asset', start: 4, duration: 6, audioLinked: true },
+      { id: 'audio-first', kind: 'audio', trackId: 'a', assetId: 'asset', start: 0, duration: 4, linkedClipId: 'video-first' },
+      { id: 'audio-second', kind: 'audio', trackId: 'a', assetId: 'asset', start: 4, duration: 6, linkedClipId: 'video-second' },
+    ]
+
+    expect(removeClip(clips, 'audio-second')).toEqual([clips[0], clips[1], clips[2]])
+    expect(removeClip(clips, 'video-second')).toEqual([clips[0], clips[2]])
+    expect(removeClip(clips, 'missing')).toBe(clips)
+  })
+
+  it('splits an editable linked audio lane independently when its video track is locked', () => {
+    const clips = [
+      { id: 'video', kind: 'video', trackId: 'locked-video', start: 0, duration: 10, audioLinked: true },
+      { id: 'audio', kind: 'audio', trackId: 'editable-audio', start: 0, duration: 10, linkedClipId: 'video' },
+    ]
+    const result = splitClips(clips, 4, ['editable-audio'])
+    expect(result).toHaveLength(3)
+    expect(result.filter((clip) => clip.kind === 'audio').map((clip) => ({ start: clip.start, duration: clip.duration, linked: clip.linkedClipId }))).toEqual([
+      { start: 0, duration: 4, linked: null },
+      { start: 4, duration: 6, linked: null },
+    ])
+  })
+
+  it('splits an editable video lane independently when its linked audio track is locked', () => {
+    const clips = [
+      { id: 'video', kind: 'video', trackId: 'editable-video', start: 0, duration: 10, audioLinked: true },
+      { id: 'audio', kind: 'audio', trackId: 'locked-audio', start: 0, duration: 10, linkedClipId: 'video' },
+    ]
+    const result = splitClips(clips, 4, ['editable-video'])
+    expect(result).toHaveLength(3)
+    expect(result.filter((clip) => clip.kind === 'video').map((clip) => ({ start: clip.start, duration: clip.duration }))).toEqual([
+      { start: 0, duration: 4 },
+      { start: 4, duration: 6 },
+    ])
+    expect(result.find((clip) => clip.id === 'audio')).toEqual(clips[1])
+  })
+
+  it('preserves locked source audio when deleting its video segment', () => {
+    const tracks = [{ id: 'video', locked: false }, { id: 'audio', locked: true }]
+    const video = { id: 'picture', kind: 'video', trackId: 'video', start: 0, duration: 10, audioLinked: true }
+    const audio = { id: 'sound', kind: 'audio', trackId: 'audio', start: 0, duration: 10, trimStart: 0, trimEnd: 10, linkedClipId: 'picture' }
+    const clips = [video, audio]
+    expect(removeClip(clips, 'sound', false, tracks)).toBe(clips)
+    expect(removeClip(clips, 'picture', false, tracks)).toEqual([{ ...audio, linkedClipId: null, audioLinked: false }])
+    const split = splitClips(clips, 4, ['video'])
+    const deleted = removeClip(split, 'picture', false, tracks)
+    expect(deleted.find((clip) => clip.id === 'sound')).toEqual({ ...audio, linkedClipId: null, audioLinked: false })
+    expect(deleted.filter((clip) => clip.kind === 'video').map((clip) => [clip.start, clip.duration])).toEqual([[4, 6]])
+  })
+
+  it('does not ripple locked companion tracks or shift their remaining clips', () => {
+    const clips = [
+      { id: 'picture', kind: 'video', assetId: 'source', trackId: 'video', start: 0, duration: 4, audioLinked: true },
+      { id: 'later-picture', kind: 'video', assetId: 'source', trackId: 'video', start: 4, duration: 6, audioLinked: true },
+      { id: 'sound', kind: 'audio', assetId: 'source', trackId: 'audio', start: 0, duration: 4, linkedClipId: 'picture' },
+      { id: 'later-sound', kind: 'audio', assetId: 'source', trackId: 'audio', start: 4, duration: 6, linkedClipId: 'later-picture' },
+    ]
+    const result = removeClip(clips, 'picture', true, [{ id: 'video', locked: false }, { id: 'audio', locked: true }])
+    expect(result.find((clip) => clip.id === 'later-picture').start).toBe(0)
+    expect(result.find((clip) => clip.id === 'later-sound')).toBe(clips[3])
+    expect(result.find((clip) => clip.id === 'sound')).toMatchObject({ start: 0, duration: 4, linkedClipId: null })
+    expect(clips[2].linkedClipId).toBe('picture')
+  })
+
+  it('keeps audio segments unique through repeated splits and deletes the middle segment', () => {
+    const video = { id: 'video', kind: 'video', trackId: 'locked-video', start: 0, duration: 40, audioLinked: true }
+    const audio = { id: 'audio', kind: 'audio', trackId: 'audio', assetId: 'source', start: 0, duration: 40, trimStart: 0, trimEnd: 40, linkedClipId: 'video' }
+    const first = splitClips([video, audio], 10, ['audio'])
+    const second = splitClips(first, 15, ['audio'])
+    const third = splitClips(second, 20, ['audio'])
+    expect(third).toHaveLength(5)
+    expect(new Set(third.map((clip) => clip.id)).size).toBe(third.length)
+    expect(third.filter((clip) => clip.kind === 'audio').map((clip) => [clip.start, clip.duration])).toEqual([[0, 10], [10, 5], [15, 5], [20, 20]])
+    expect(third.find((clip) => clip.id === 'video')).toBe(video)
+    expect(first).toHaveLength(3)
+    const middle = third.find((clip) => clip.kind === 'audio' && clip.start === 10)
+    const deleted = removeClip(third, middle.id)
+    expect(deleted.filter((clip) => clip.kind === 'audio').map((clip) => [clip.start, clip.duration])).toEqual([[0, 10], [15, 5], [20, 20]])
+    expect(deleted.find((clip) => clip.id === 'video')).toBe(video)
+    expect(JSON.parse(JSON.stringify(deleted))).toHaveLength(4)
+  })
+
+  it.each(['audio', 'video', 'graphics', 'subtitle'])('splits a standalone %s without creating a companion of itself', (kind) => {
+    const clips = [{ id: 'standalone', kind, trackId: 'editable', start: 0, duration: 10, trimStart: 0, trimEnd: 10 }]
+    const result = splitClips(clips, 4, ['editable'])
+    expect(result).toHaveLength(2)
+    expect(result.map((clip) => [clip.start, clip.duration])).toEqual([[0, 4], [4, 6]])
+    expect(result.some((clip) => clip.linkedClipId === clip.id)).toBe(false)
+  })
+
+  it('repairs duplicate audio segments produced by the old standalone split and preserves intentional overlays', () => {
+    const left = { id: 'left', kind: 'audio', trackId: 'audio', assetId: 'source', start: 10, duration: 5, trimStart: 10, trimEnd: 15 }
+    const right = { ...left, id: 'right', start: 15, duration: 25, trimStart: 15, trimEnd: 40 }
+    const overlay = { ...left, id: 'intentional-overlay' }
+    const corrupted = [left, right, { ...left, linkedClipId: 'left' }, { ...right, id: 'duplicate-right', linkedClipId: 'right' }, overlay]
+    expect(repairSplitAudioDuplicates(corrupted)).toEqual([left, right, overlay])
+    expect(corrupted).toHaveLength(5)
+    const repaired = repairSplitAudioDuplicates(corrupted)
+    expect(repairSplitAudioDuplicates(repaired)).toBe(repaired)
+    expect(removeClip(corrupted, 'duplicate-right')).toEqual([left, overlay])
   })
 
   it('allows a single stream-copy video with its linked original audio lane', () => {

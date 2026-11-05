@@ -118,6 +118,37 @@ describe('FFmpeg timeline export', () => {
     expect(JSON.parse(stdout).streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(0)
   }, 30_000)
 
+  it.each([
+    ['enabled embedded audio', { volume: 1 }, null, false, 1],
+    ['muted embedded audio', { volume: 0 }, null, false, 0],
+    ['suppressed embedded audio', { volume: 1, suppressEmbeddedAudio: true }, null, false, 0],
+    ['disabled embedded audio', { volume: 1, audioLinked: false }, null, false, 0],
+    ['enabled linked audio', { volume: 0 }, { volume: 1 }, false, 1],
+    ['muted linked audio', { volume: 1 }, { volume: 0 }, false, 0],
+    ['muted linked audio clip', { volume: 1 }, { volume: 1, muted: true }, false, 0],
+    ['muted linked audio track', { volume: 1 }, { volume: 1 }, true, 0],
+  ])('preserves the audio routing for %s in stream-copy exports', async (name, videoSettings, audioSettings, audioTrackMuted, expectedAudioStreams) => {
+    const input = path.join(folder, 'source.mp4')
+    const output = path.join(folder, `${name.replaceAll(' ', '-')}.mp4`)
+    const project = {
+      duration: 2,
+      frameRate: { numerator: 30, denominator: 1 },
+      frameSize: { width: 320, height: 180 },
+      assets: [{ id: 'source', path: input, videoCodec: 'h264', audioCodec: 'aac' }],
+      tracks: [{ id: 'video', type: 'video' }, { id: 'audio', type: 'audio', muted: audioTrackMuted }],
+      clips: [
+        { id: 'picture', kind: 'video', trackId: 'video', assetId: 'source', start: 0, duration: 2, ...videoSettings },
+        ...(audioSettings ? [{ id: 'sound', kind: 'audio', trackId: 'audio', assetId: 'source', linkedClipId: 'picture', start: 0, duration: 2, ...audioSettings }] : []),
+      ],
+    }
+    const plan = buildExportArguments({ preset: 'stream-copy', format: 'mp4', project }, output)
+    await execFileAsync(ffmpeg, plan.args, { maxBuffer: 8 * 1024 * 1024 })
+    const { stdout } = await execFileAsync(ffprobe, ['-v', 'error', '-show_streams', '-of', 'json', output])
+    const streams = JSON.parse(stdout).streams
+    expect(streams.filter((stream) => stream.codec_type === 'video')).toHaveLength(1)
+    expect(streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(expectedAudioStreams)
+  })
+
   it('applies subtitle-track offsets without mutating the source subtitle cues', () => {
     const ass = createAss([{ start: 4, end: 6, text: 'subtitle' }], { width: 320, height: 180 })
     expect(ass).toContain('Dialogue: 0,0:00:04.00,0:00:06.00')

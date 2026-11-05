@@ -95,6 +95,7 @@ import {
   removeTrackClips,
   replaceAssetById,
   repairPlaceholderDurationClips,
+  repairSplitAudioDuplicates,
   resolveMediaDurationSeconds,
   sampleProject,
   splitClips,
@@ -143,6 +144,7 @@ function App() {
   const [project, setProject] = useState(() => hydrateProject(mergeProjectAssetLibrary(loadProject(), loadAssets())))
   const [activeTab, setActiveTab] = useState('edit')
   const [activePanel, setActivePanel] = useState('素材库')
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
   const [activeTrackId, setActiveTrackId] = useState('video-main')
   const [selectedId, setSelectedId] = useState(null)
   const [selectedClipIds, setSelectedClipIds] = useState([])
@@ -209,6 +211,7 @@ function App() {
   const durationProbeAttemptRef = useRef(new Set())
   const previewProxyAttemptRef = useRef(new Set())
   const previewSeekingTimerRef = useRef(null)
+  const pendingVideoSeekRef = useRef(null)
   const liveTransportRef = useRef({ playing: false, position: project.playhead, lastClock: 0 })
   const activeTimelineAudioSignatureRef = useRef(null)
   const autosaveRef = useRef(null)
@@ -533,11 +536,11 @@ function App() {
     setMessageKind(kind)
   }
 
-  function updateProject(patch, historyLabel = '') {
+  function updateProject(patch, historyLabel = '', librarySnapshot = undefined) {
     setProject((current) => {
       projectEpochRef.current += 1
       if (historyLabel) {
-        setEditHistory((previous) => [...previous.slice(-39), { label: historyLabel, project: current }])
+        setEditHistory((previous) => [...previous.slice(-39), { label: historyLabel, project: current, ...(librarySnapshot !== undefined ? { assets: librarySnapshot } : {}) }])
         setEditFuture([])
       }
       const next = typeof patch === 'function' ? patch(current) : { ...current, ...patch }
@@ -546,8 +549,8 @@ function App() {
     })
   }
 
-  function applyEdit(label, reducer) {
-    updateProject(reducer, label)
+  function applyEdit(label, reducer, librarySnapshot = undefined) {
+    updateProject(reducer, label, librarySnapshot)
   }
 
   function removeAsset(asset) {
@@ -556,7 +559,7 @@ function App() {
     if (references.length && !window.confirm(`「${asset.name}」正在时间线上使用，将同时移除 ${references.length} 个片段。\n只从工程素材库移除，不会删除磁盘上的原始文件。继续？`)) return
 
     const nextProject = removeAssetReferences(current, asset.id)
-    applyEdit('从素材库移除素材', (projectState) => removeAssetReferences(projectState, asset.id))
+    applyEdit('从素材库移除素材', (projectState) => removeAssetReferences(projectState, asset.id), assets)
     setAssets((existing) => existing.filter((item) => item.id !== asset.id))
     updateSelectedAssetIds(selectedAssetIdsRef.current.filter((id) => id !== asset.id))
     const removedClipIds = new Set(references.map((clip) => clip.id))
@@ -575,7 +578,7 @@ function App() {
     const removedClipCount = current.clips.length - nextProject.clips.length
     if (!window.confirm(`确定清空素材库中的 ${libraryAssets.length} 个素材吗？${removedClipCount ? `同时移除时间线上的 ${removedClipCount} 个片段。` : ''}\n只移除本机库和工程引用，不会删除磁盘上的原始文件。此操作可撤销。`)) return
 
-    applyEdit('清空素材库', () => nextProject)
+    applyEdit('清空素材库', () => nextProject, assets)
     setAssets([])
     updateSelectedAssetIds([])
     updateSelectedClipIds(selectedClipIdsRef.current.filter((id) => nextProject.clips.some((clip) => clip.id === id)))
@@ -661,6 +664,25 @@ function App() {
     const next = Math.max(0, Math.min(duration, value))
     liveTransportRef.current.position = next
     liveTransportRef.current.lastClock = 0
+    if (liveTransportRef.current.playing) {
+      const nextProject = { ...projectRef.current, playhead: next }
+      const activeClip = findActiveVisualClip(nextProject, next)
+      const video = playerRef.current
+      if (activeClip?.kind === 'video' && video?.dataset.clipId === activeClip.id && video.readyState >= 1) {
+        const sourceTime = Math.max(0, (Number(activeClip.trimStart) || 0) + next - activeClip.start)
+        const target = Math.min(Number.isFinite(video.duration) ? video.duration : sourceTime, sourceTime)
+        const frameTolerance = 1 / Number(nextProject.frameRate.numerator || 30)
+        if (Math.abs(video.currentTime - target) > frameTolerance) {
+          pendingVideoSeekRef.current = { clipId: activeClip.id, target }
+          video.currentTime = target
+        } else {
+          pendingVideoSeekRef.current = null
+        }
+      } else {
+        pendingVideoSeekRef.current = null
+      }
+      syncTimelineAudio(next, true, nextProject, true)
+    }
     projectRef.current = { ...projectRef.current, playhead: next }
     setProject((current) => ({ ...current, playhead: next }))
     setSelectedId((previous) => {
@@ -776,6 +798,10 @@ function App() {
     if (previewSeekingTimerRef.current) window.clearTimeout(previewSeekingTimerRef.current)
     previewSeekingTimerRef.current = null
     setPreviewSeeking(false)
+    if (pendingVideoSeekRef.current?.clipId === playerRef.current?.dataset.clipId
+      && Math.abs((playerRef.current?.currentTime || 0) - pendingVideoSeekRef.current.target) <= 1 / Number(projectRef.current.frameRate.numerator || 30)) {
+      pendingVideoSeekRef.current = null
+    }
   }
 
   function handleUndo() {
@@ -784,22 +810,30 @@ function App() {
       return
     }
     const previous = editHistory.at(-1)
-    setEditFuture((future) => [...future, { label: '恢复编辑', project }])
+    setEditFuture((future) => [...future, { label: previous.label, project, ...(previous.assets !== undefined ? { assets } : {}) }])
     setEditHistory((history) => history.slice(0, -1))
     projectEpochRef.current += 1
     projectRef.current = previous.project
     setProject(previous.project)
+    if (previous.assets !== undefined) {
+      setAssets(previous.assets)
+      safeStorageWrite('videome-assets', previous.assets)
+    }
     setStatus(`已撤销「${previous.label}」。`)
   }
 
   function handleRedo() {
     if (!editFuture.length) return
     const next = editFuture.at(-1)
-    setEditHistory((history) => [...history, { label: next.label, project }])
+    setEditHistory((history) => [...history, { label: next.label, project, ...(next.assets !== undefined ? { assets } : {}) }])
     setEditFuture((future) => future.slice(0, -1))
     projectEpochRef.current += 1
     projectRef.current = next.project
     setProject(next.project)
+    if (next.assets !== undefined) {
+      setAssets(next.assets)
+      safeStorageWrite('videome-assets', next.assets)
+    }
     setStatus('已重做一项编辑。')
   }
 
@@ -1234,34 +1268,48 @@ function App() {
 
   function splitAtPlayhead() {
     const activeState = projectRef.current
-    const targets = activeState.tracks.filter((track) => ['video', 'audio', 'graphics', 'subtitle'].includes(track.type))
-    const relevant = activeState.clips.filter((clip) => targets.some((track) => track.id === clip.trackId && !track.locked) && activeState.playhead > clip.start + 1 / 240 && activeState.playhead < clip.start + clip.duration - 1 / 240)
-    if (!relevant.length) {
-      setStatus('播放指针未穿过任何片段，请将红色播放头移动到片段内部。', 'info')
+    const editableTrackIds = activeState.tracks.filter((track) => ['video', 'audio', 'graphics', 'subtitle'].includes(track.type) && !track.locked).map((track) => track.id)
+    const splitResult = splitClips(activeState.clips, activeState.playhead, editableTrackIds)
+    const sourceIds = new Set(activeState.clips.map((clip) => clip.id))
+    const splitCount = splitResult.filter((clip) => !sourceIds.has(clip.id)).length
+    if (!splitCount) {
+      const crossingClips = activeState.clips.filter((clip) => activeState.playhead > clip.start + 1 / 240 && activeState.playhead < clip.start + clip.duration - 1 / 240)
+      setStatus(crossingClips.length && crossingClips.every((clip) => !editableTrackIds.includes(clip.trackId))
+        ? '播放指针处的轨道已锁定，请先解锁后再分割。'
+        : '播放指针未穿过任何片段，请将红色播放头移动到片段内部。', 'info')
       return
     }
-    applyEdit('分割片段', (current) => ({ ...current, clips: splitClips(current.clips, current.playhead, current.tracks.filter((track) => !track.locked).map((track) => track.id)) }))
-    setStatus(`已在 ${formatTime(project.playhead)} 分割 ${relevant.length} 个片段。`)
+
+    applyEdit('分割片段', (current) => ({ ...current, clips: splitResult }))
+    setStatus(`已在 ${formatTime(activeState.playhead)} 分割 ${splitCount} 个片段。`)
   }
 
   function removeSelected(ripple) {
-    if (!selectedId) {
+    const current = projectRef.current
+    const selectedClipId = current.clips.some((clip) => clip.id === selectedId)
+      ? selectedId
+      : selectedClipIdsRef.current.find((id) => current.clips.some((clip) => clip.id === id))
+    if (!selectedClipId) {
       setStatus('先选择一个片段。', 'info')
       return
     }
-    const target = projectRef.current.clips.find((clip) => clip.id === selectedId)
-    const locked = target && projectRef.current.tracks.find((track) => track.id === target.trackId)?.locked
+    const target = current.clips.find((clip) => clip.id === selectedClipId)
+    const locked = current.tracks.find((track) => track.id === target.trackId)?.locked
     if (locked) {
       setStatus('当前轨道已锁定；请先解锁再删除片段。', 'info')
       return
     }
-    applyEdit(ripple ? '波纹删除片段' : '删除片段', (current) => {
-      const removed = current.clips.find((clip) => clip.id === selectedId)
-      const nextClips = removeClip(current.clips, selectedId, ripple)
-      const previousDuration = Math.max(1, ...current.clips.map((clip) => clip.start + clip.duration))
+    const nextClips = removeClip(current.clips, selectedClipId, ripple, current.tracks)
+    if (current.clips.length === nextClips.length) {
+      setStatus('所选片段没有被删除，请重新选择后重试。', 'info')
+      return
+    }
+    applyEdit(ripple ? '波纹删除片段' : '删除片段', (projectState) => {
+      const previousDuration = Math.max(1, ...projectState.clips.map((clip) => clip.start + clip.duration))
       const nextDuration = Math.max(1, ...nextClips.map((clip) => clip.start + clip.duration))
+      const removed = projectState.clips.find((clip) => clip.id === selectedClipId)
       const delta = previousDuration - nextDuration
-      return { ...current, clips: nextClips, duration: ripple && delta > 0 && removed?.start + removed.duration >= previousDuration - .15 ? nextDuration : current.duration }
+      return { ...projectState, clips: nextClips, duration: ripple && delta > 0 && removed?.start + removed.duration >= previousDuration - .15 ? nextDuration : projectState.duration }
     })
     setSelectedId(null)
     updateSelectedClipIds([])
@@ -1935,6 +1983,8 @@ function App() {
       const videoIsTimelineClock = playheadClip?.kind === 'video'
         && currentVideo?.dataset.clipId === playheadClip.id
         && !currentVideo.paused
+        && !currentVideo.seeking
+        && pendingVideoSeekRef.current?.clipId !== playheadClip.id
         && Number.isFinite(currentVideo.currentTime)
       if (videoIsTimelineClock) {
         state.position = Math.min(duration, playheadClip.start + Math.max(0, currentVideo.currentTime - (playheadClip.trimStart || 0)))
@@ -1978,7 +2028,7 @@ function App() {
     }
   }, [playing, duration, selectedClip?.id])
 
-  function syncTimelineAudio(position, shouldPlay, currentProject) {
+  function syncTimelineAudio(position, shouldPlay, currentProject, forceSeek = false) {
     // Linked source audio is decoded by the paired video element to keep it
     // sample-synchronous; this scheduler handles independent audio clips only.
     const clips = currentProject.clips.filter((clip) => clip.kind === 'audio' && !clip.linkedClipId)
@@ -1988,7 +2038,7 @@ function App() {
       return position >= clip.start && position < clip.start + clip.duration
         && !clip.muted && !track?.muted && Number(clip.volume ?? 0.82) > 0
     }).map((clip) => [clip.id, clip.start, clip.trimStart || 0, clip.volume ?? 0.82]))
-    if (shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) return
+    if (!forceSeek && shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) return
     activeTimelineAudioSignatureRef.current = shouldPlay ? audioSignature : null
     for (const clip of clips) {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
@@ -2017,7 +2067,7 @@ function App() {
       const offset = Math.max(0, (clip.trimStart || 0) + position - clip.start)
       const sourceDuration = Number(clip.sourceDuration || asset?.duration || player.duration || 0)
       const sourceTime = clip.repeat && sourceDuration > 0 ? offset % sourceDuration : Math.min(offset, Math.max(0, (player.duration || sourceDuration || offset) - 0.04))
-      if (Number.isFinite(sourceTime) && Math.abs(player.currentTime - sourceTime) > (shouldPlay ? 0.35 : 0.04)) player.currentTime = sourceTime
+      if (Number.isFinite(sourceTime) && (forceSeek || Math.abs(player.currentTime - sourceTime) > (shouldPlay ? 0.35 : 0.04))) player.currentTime = sourceTime
       player.volume = Math.max(0, Math.min(1, Number(clip.volume ?? 0.82)))
       player.muted = false
 
@@ -2465,7 +2515,7 @@ function App() {
   }
 
   function renderRightInspector() {
-    return <aside className="inspector-panel"><div className="inspector-heading"><div><span className="eyebrow">INSPECTOR</span><h2>{activeTab === 'subtitles' ? '字幕编辑' : activeTab === 'music' ? '配乐编排' : activeTab === 'settings' ? '画幅与声音' : '属性检查器'}</h2></div><button className="icon-button compact" onClick={() => setActivePanel(activePanel === '属性检查器' ? '素材库' : '属性检查器')} aria-label="切换检查器"><ChevronRight size={14} /></button></div>{activeTab === 'subtitles' ? renderSubtitleInspector() : activeTab === 'music' ? renderMusicInspector() : activeTab === 'settings' ? renderProjectSettings() : renderClipInspector()}</aside>
+    return <aside className={`inspector-panel ${inspectorCollapsed ? 'inspector-panel-collapsed' : ''}`}><div className="inspector-heading"><div><span className="eyebrow">INSPECTOR</span><h2>{activeTab === 'subtitles' ? '字幕编辑' : activeTab === 'music' ? '配乐编排' : activeTab === 'settings' ? '画幅与声音' : '属性检查器'}</h2></div><button className="icon-button compact inspector-toggle" onClick={() => setInspectorCollapsed((collapsed) => !collapsed)} aria-label={inspectorCollapsed ? '展开检查器' : '收起检查器'} title={inspectorCollapsed ? '展开检查器' : '收起检查器'}>{inspectorCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}</button></div>{activeTab === 'subtitles' ? renderSubtitleInspector() : activeTab === 'music' ? renderMusicInspector() : activeTab === 'settings' ? renderProjectSettings() : renderClipInspector()}</aside>
   }
 
   function renderSubtitleInspector() {
@@ -2621,7 +2671,7 @@ function App() {
       {renderMediaLibrary()}
       <main className="editor-main">
         {renderEditorToolbar()}
-        <div className="workspace-grid">
+        <div className={`workspace-grid ${inspectorCollapsed ? 'workspace-inspector-collapsed' : ''}`}>
           {renderVideoPanel()}
           {renderRightInspector()}
         </div>
@@ -3112,7 +3162,7 @@ function hydrateProject(project) {
     exportSettings: { ...defaultProject.exportSettings, ...(source.exportSettings || {}) },
     subtitle: { ...defaultProject.subtitle, ...(source.subtitle || {}), cues: Array.isArray(source.subtitle?.cues) ? source.subtitle.cues : defaultProject.subtitle.cues },
     tracks: Array.isArray(source.tracks) ? source.tracks : defaultProject.tracks.map((track) => ({ ...track })),
-    clips: Array.isArray(source.clips) ? source.clips : [],
+    clips: repairSplitAudioDuplicates(Array.isArray(source.clips) ? source.clips : []),
     assets,
   }
 }
