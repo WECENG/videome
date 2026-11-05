@@ -136,7 +136,7 @@ npm run verify:package -- /absolute/path/to/Resources
 
 工作流文件存在不代表已运行。本地未提交/未推送的改动不会参与远程构建。Windows Server runner 结果也不替代 Windows 11/10 的安装、界面、文件关联和真实批量人工验收。
 
-Windows 媒体 ZIP 明确使用 `%SystemRoot%\System32\tar.exe` 解压，避免 Git Bash 的同名程序将 `D:\...` 盘符误判成远程主机。失败时先查看 `Prepare bundled media` 步骤或失败 Artifact 中的 `media-prepare.log`。更新工作流后需重新执行 **Run workflow**，旧运行的 **Re-run jobs** 仍使用旧提交。
+Windows 媒体 ZIP 明确使用系统 PowerShell 调用 .NET ZIP 接口解压，路径以 UTF-16 编码参数传递。这样可避免 Git Bash `tar` 将 `D:\...` 盘符误判成远程主机，以及系统 `tar` 对中文路径的编码限制。失败时先查看 `Prepare bundled media` 步骤或失败 Artifact 中的 `media-prepare.log`。更新工作流后需重新执行 **Run workflow**，旧运行的 **Re-run jobs** 仍使用旧提交。
 
 在本地准备同样的验收材料：
 

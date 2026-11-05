@@ -40,12 +40,14 @@ async function files(directory) {
   }))).flat()
 }
 async function extractWindowsZip(archive, destination, { env = process.env, run = exec } = {}) {
-  // Git Bash's tar treats the colon in D:\... as a remote-host separator.
-  // Select Windows' bsdtar explicitly rather than resolving tar.exe via PATH.
+  // Avoid PATH's Git Bash tar (drive letters) and native tar's ANSI paths.
+  // UTF-16 encoded PowerShell passes Unicode paths to the .NET ZIP API.
   const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR
   if (!systemRoot) throw new Error('无法定位 Windows 系统目录（SystemRoot）。')
-  const binary = path.win32.join(systemRoot, 'System32', 'tar.exe')
-  await run(binary, ['-xf', archive, '-C', destination], { windowsHide: true })
+  const binary = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const literal = (value) => `'${value.replace(/'/g, "''")}'`
+  const script = `$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory(${literal(archive)}, ${literal(destination)})`
+  await run(binary, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true })
 }
 async function inspectMacBinary(file, minimum = 15) {
   const { stdout: architecture } = await exec('/usr/bin/lipo', ['-archs', file])
