@@ -110,6 +110,19 @@ describe('track management', () => {
     expect(result.clips.every((clip) => result.tracks.some((track) => track.id === clip.trackId))).toBe(true)
   })
 
+  it('defaults video source audio to muted while keeping imported audio clips audible', () => {
+    const tracks = [{ id: 'video', type: 'video' }, { id: 'audio', type: 'audio', label: '原声 · 配音' }]
+    const result = createMediaClips({
+      assets: [
+        { id: 'video-asset', name: 'video.mp4', kind: 'video', duration: 3, audioCodec: 'aac' },
+        { id: 'audio-asset', name: 'audio.wav', kind: 'audio', duration: 3 },
+      ],
+      track: tracks[0], clips: [], playhead: 0, duration: 60, tracks,
+    })
+    expect(result.inserted.map((clip) => clip.volume)).toEqual([0, 0.82])
+    expect(result.clips.find((clip) => clip.linkedClipId === result.inserted[0].id).volume).toBe(0.82)
+  })
+
   it('inserts audio into the chosen compatible track', () => {
     const tracks = [{ id: 'first', type: 'audio' }, { id: 'chosen', type: 'audio' }]
     const result = createMediaClips({

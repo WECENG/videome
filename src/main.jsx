@@ -49,6 +49,8 @@ import {
   Scissors,
   Search,
   Settings2,
+  SkipBack,
+  SkipForward,
   Sparkles,
   Subtitles,
   Sun,
@@ -444,6 +446,12 @@ function App() {
       } else if (event.code === 'Space') {
         event.preventDefault()
         togglePlayback()
+      } else if (key === 'home' && !mod) {
+        event.preventDefault()
+        returnToStart()
+      } else if (key === 'end' && !mod) {
+        event.preventDefault()
+        returnToEnd()
       } else if (key === 's' && !mod) {
         event.preventDefault()
         splitAtPlayhead()
@@ -660,6 +668,28 @@ function App() {
       const clip = project.clips.find((item) => next >= item.start && next < item.start + item.duration)
       return clip?.id || previous
     })
+  }
+
+  function returnToStart() {
+    const currentProject = projectRef.current
+    liveTransportRef.current.playing = false
+    liveTransportRef.current.position = 0
+    liveTransportRef.current.lastClock = 0
+    if (playerRef.current && !playerRef.current.paused) playerRef.current.pause()
+    syncTimelineAudio(0, false, currentProject)
+    setPlaying(false)
+    setPlayhead(0)
+  }
+
+  function returnToEnd() {
+    const currentProject = projectRef.current
+    liveTransportRef.current.playing = false
+    liveTransportRef.current.position = duration
+    liveTransportRef.current.lastClock = 0
+    if (playerRef.current && !playerRef.current.paused) playerRef.current.pause()
+    syncTimelineAudio(duration, false, currentProject)
+    setPlaying(false)
+    setPlayhead(duration)
   }
 
   function syncPreviewToPlayhead(event, clipId) {
@@ -2398,7 +2428,7 @@ function App() {
             <div className="preview-safe-margin" aria-hidden="true" />
           </div>
         </div>
-        <div className="transport-row"><button className="transport-side" title="上一剪辑点" onClick={() => { const previous = [...project.clips].filter((clip) => clip.start < project.playhead).sort((a, b) => b.start - a.start)[0]; setPlayhead(previous?.start || 0) }}><ChevronLeft size={14} /></button><button className="transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={13} /></button><button className="play-button" onClick={togglePlayback} aria-label={playing ? '暂停' : '播放'}>{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><button className="transport-step next" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={13} /></button><button className="transport-side" title="下一剪辑点" onClick={() => { const next = [...project.clips].filter((clip) => clip.start > project.playhead).sort((a, b) => a.start - b.start)[0]; setPlayhead(next?.start || duration) }}><ChevronRight size={14} /></button><div className="timecode">{timestamp}<span className="timecode-separator">:</span><span className="frame-code">{String(Math.round((project.playhead % 1) * 30).toString().padStart(2, '0'))}</span></div><span className="transport-ratio">01.00 ×</span><button className="icon-button" title="原画预览" onClick={() => setStatus('播放性能：代理模式已就绪，代理将在后续阶段生成。', 'info')}><Gauge size={13} /></button></div>
+        <div className="transport-row"><button className="transport-side" title="回到开头" aria-label="回到开头" onClick={returnToStart}><SkipBack size={13} /></button><button className="transport-side" title="上一剪辑点" onClick={() => { const previous = [...project.clips].filter((clip) => clip.start < project.playhead).sort((a, b) => b.start - a.start)[0]; setPlayhead(previous?.start || 0) }}><ChevronLeft size={14} /></button><button className="transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={13} /></button><button className="play-button" onClick={togglePlayback} aria-label={playing ? '暂停' : '播放'}>{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><button className="transport-step next" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={13} /></button><button className="transport-side" title="下一剪辑点" onClick={() => { const next = [...project.clips].filter((clip) => clip.start > project.playhead).sort((a, b) => a.start - b.start)[0]; setPlayhead(next?.start || duration) }}><ChevronRight size={14} /></button><button className="transport-side" title="到末尾" aria-label="到末尾" onClick={returnToEnd}><SkipForward size={13} /></button><div className="timecode">{timestamp}<span className="timecode-separator">:</span><span className="frame-code">{String(Math.round((project.playhead % 1) * 30).toString().padStart(2, '0'))}</span></div><span className="transport-ratio">01.00 ×</span><button className="icon-button" title="原画预览" onClick={() => setStatus('播放性能：代理模式已就绪，代理将在后续阶段生成。', 'info')}><Gauge size={13} /></button></div>
         <div className="preview-footer"><span><span className="footer-rec" /><b>PREVIEW</b><i>·</i>{finalLive && finalPreviewAsset?.width ? `${finalPreviewAsset.width} × ${finalPreviewAsset.height}` : project.profile}</span><span><span className="preview-fps">30</span> FPS <i>·</i>{finalLive ? '时间线预览' : exampleMode ? '界面示例 · 无源文件' : project.clips.length ? '无可用画面' : '等待导入素材'}<i>·</i>SDR</span></div>
       </div>
     )
@@ -2431,7 +2461,7 @@ function App() {
   }
 
   function renderTimelineControls() {
-    return <div className="timeline-transport"><div className="transport-clock">{formatTime(project.playhead)}<span>:<i>{String(Math.floor(project.playhead * 30) % 30).padStart(2, '0')}</i></span></div><button className="timeline-transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={14} /></button><button className="timeline-transport-play" aria-label={playing ? '暂停' : '播放'} onClick={togglePlayback}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}</button><button className="timeline-transport-step" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={14} /></button><span className="transport-vertical-rule" /><button className="timeline-transport-step" title="跳转标记" onClick={() => { const next = guideMarkers.find((marker) => marker.start > project.playhead); if (next) setPlayhead(next.start) }}><Flag size={13} /></button><span className="timeline-transport-label">{activeTrack?.label || '未选择轨道'}</span><span className="timeline-transport-hint">AUDIO SCRUB <i>·</i> 30 fps</span></div>
+    return <div className="timeline-transport"><div className="transport-clock">{formatTime(project.playhead)}<span>:<i>{String(Math.floor(project.playhead * 30) % 30).padStart(2, '0')}</i></span></div><button className="timeline-transport-step" aria-label="回到开头" title="回到开头 · Home" onClick={returnToStart}><SkipBack size={13} /></button><button className="timeline-transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={14} /></button><button className="timeline-transport-play" aria-label={playing ? '暂停' : '播放'} onClick={togglePlayback}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}</button><button className="timeline-transport-step" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={14} /></button><button className="timeline-transport-step" aria-label="到末尾" title="到末尾 · End" onClick={returnToEnd}><SkipForward size={13} /></button><span className="transport-vertical-rule" /><button className="timeline-transport-step" title="跳转标记" onClick={() => { const next = guideMarkers.find((marker) => marker.start > project.playhead); if (next) setPlayhead(next.start) }}><Flag size={13} /></button><span className="timeline-transport-label">{activeTrack?.label || '未选择轨道'}</span><span className="timeline-transport-hint">AUDIO SCRUB <i>·</i> 30 fps</span></div>
   }
 
   function renderRightInspector() {

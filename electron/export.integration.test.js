@@ -95,6 +95,29 @@ describe('FFmpeg timeline export', () => {
     expect(Number(metadata.format.duration)).toBeGreaterThanOrEqual(1.9)
   }, 30_000)
 
+  it('omits muted linked source audio in stream-copy exports', async () => {
+    const input = path.join(folder, 'source.mp4')
+    const output = path.join(folder, 'muted-source-audio.partial.mp4')
+    const project = {
+      duration: 2,
+      frameRate: { numerator: 30, denominator: 1 },
+      frameSize: { width: 320, height: 180 },
+      assets: [{ id: 'source', path: input, duration: 2, videoCodec: 'h264', audioCodec: 'aac' }],
+      tracks: [{ id: 'video', type: 'video', order: 0 }, { id: 'audio', type: 'audio', order: 0 }],
+      clips: [
+        { id: 'picture', kind: 'video', trackId: 'video', assetId: 'source', start: 0, duration: 2, audioLinked: true, volume: 0 },
+        { id: 'sound', kind: 'audio', trackId: 'audio', assetId: 'source', linkedClipId: 'picture', start: 0, duration: 2, volume: 0 },
+      ],
+    }
+    const plan = buildExportArguments({ preset: 'stream-copy', format: 'mp4', project }, output)
+    await execFileAsync(ffmpeg, plan.args, { maxBuffer: 8 * 1024 * 1024 })
+    const { stdout } = await execFileAsync(ffprobe, ['-v', 'error', '-show_streams', '-of', 'json', output])
+    expect(JSON.parse(stdout).streams.filter((stream) => stream.codec_type)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ codec_type: 'video' }),
+    ]))
+    expect(JSON.parse(stdout).streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(0)
+  }, 30_000)
+
   it('applies subtitle-track offsets without mutating the source subtitle cues', () => {
     const ass = createAss([{ start: 4, end: 6, text: 'subtitle' }], { width: 320, height: 180 })
     expect(ass).toContain('Dialogue: 0,0:00:04.00,0:00:06.00')

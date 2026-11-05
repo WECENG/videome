@@ -125,7 +125,9 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
       args: [
         '-hide_banner', '-nostdin', '-y', '-progress', 'pipe:1', '-loglevel', 'error', '-i', asset.path,
         ...(Number(clip.trimStart) > 0 ? ['-ss', number(clip.trimStart)] : []),
-        '-t', number(clip.duration), '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy',
+        '-t', number(clip.duration), '-map', '0:v:0',
+        ...(audioClips.some(({ clip: audioClip }) => audioClip.linkedClipId === clip.id && Number(audioClip.volume ?? 0.82) > 0) ? ['-map', '0:a:0?'] : []),
+        '-c', 'copy',
         ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []),
         '-f', format === 'mov' ? 'mov' : format, temporaryOutput,
       ],

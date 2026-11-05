@@ -373,7 +373,7 @@ export const createMediaClips = ({ assets, track, clips, playhead, duration, tra
       kind,
       hasAudio: Boolean(asset.audioCodec),
       codec: asset.videoCodec || asset.audioCodec || asset.codec,
-      volume: kind === 'audio' ? 0.82 : 1,
+      volume: kind === 'audio' ? 0.82 : kind === 'video' && asset.audioCodec ? 0 : 1,
       isMusic: false,
       audioLinked: kind === 'video' && Boolean(asset.audioCodec),
       previewColor: ['ocean', 'shore', 'sunset', 'palms', 'boardwalk', 'seafoam'][nextClips.length % 6],
