@@ -1,6 +1,6 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { root, exec, download, digest, files, checkMedia } = require('./media-tools.cjs')
+const { root, exec, download, digest, files, extractWindowsZip, checkMedia } = require('./media-tools.cjs')
 const manifest = require('../resources/media-sources.json')
 
 async function prepare() {
@@ -23,7 +23,7 @@ async function prepare() {
     const extracted = path.join(cache, 'windows-extracted')
     await fs.rm(extracted, { recursive: true, force: true })
     await fs.mkdir(extracted, { recursive: true })
-    await exec('tar.exe', ['-xf', archive, '-C', extracted])
+    await extractWindowsZip(archive, extracted)
     const candidates = await files(extracted)
     await fs.rm(destination, { recursive: true, force: true })
     await fs.mkdir(destination, { recursive: true })

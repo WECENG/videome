@@ -128,13 +128,15 @@ npm run verify:package -- /absolute/path/to/Resources
 
 在已推送的源码版本上，手动运行 [Desktop internal test packages](../.github/workflows/desktop-build.yml)。当前矩阵为 `macos-15` arm64、`windows-2022` x64，并在任务开始检查实际架构。
 
-流程包括 `npm ci`、媒体准备、完整测试、原生构建、包内实际转码检查及验收材料生成。测试、构建和包检查日志会上传。产物通过 Artifacts 保存 30 天，不自动创建公开 Release，不自动运行 Windows 人工验收。
+流程包括 `npm ci`、媒体准备、完整测试、原生构建、包内实际转码检查及验收材料生成。依赖安装、媒体准备和检查、测试、构建及包检查日志会上传。产物通过 Artifacts 保存 30 天，不自动创建公开 Release，不自动运行 Windows 人工验收。
 
 - `Videome-<平台>-<运行号>`：安装包、摘要、构建信息、日志和 `manual-acceptance/`。
 - `media-<平台>-<运行号>`：独立媒体 `.tar.gz`，供本机构建导入。
 - 失败时上传可用的构建信息与诊断日志。
 
 工作流文件存在不代表已运行。本地未提交/未推送的改动不会参与远程构建。Windows Server runner 结果也不替代 Windows 11/10 的安装、界面、文件关联和真实批量人工验收。
+
+Windows 媒体 ZIP 明确使用 `%SystemRoot%\System32\tar.exe` 解压，避免 Git Bash 的同名程序将 `D:\...` 盘符误判成远程主机。失败时先查看 `Prepare bundled media` 步骤或失败 Artifact 中的 `media-prepare.log`。更新工作流后需重新执行 **Run workflow**，旧运行的 **Re-run jobs** 仍使用旧提交。
 
 在本地准备同样的验收材料：
 

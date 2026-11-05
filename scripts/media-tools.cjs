@@ -39,6 +39,14 @@ async function files(directory) {
     return entry.isDirectory() ? files(file) : [file]
   }))).flat()
 }
+async function extractWindowsZip(archive, destination, { env = process.env, run = exec } = {}) {
+  // Git Bash's tar treats the colon in D:\... as a remote-host separator.
+  // Select Windows' bsdtar explicitly rather than resolving tar.exe via PATH.
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.WINDIR
+  if (!systemRoot) throw new Error('无法定位 Windows 系统目录（SystemRoot）。')
+  const binary = path.win32.join(systemRoot, 'System32', 'tar.exe')
+  await run(binary, ['-xf', archive, '-C', destination], { windowsHide: true })
+}
 async function inspectMacBinary(file, minimum = 15) {
   const { stdout: architecture } = await exec('/usr/bin/lipo', ['-archs', file])
   if (architecture.trim() !== 'arm64') throw new Error(`媒体依赖架构错误：${file}: ${architecture}`)
@@ -79,4 +87,4 @@ async function checkMedia(directory, { execute = true, platform = process.platfo
     console.log(stdout.split('\n')[0])
   }
 }
-module.exports = { root, exec, download, digest, files, checkMedia, inspectWindowsBinary }
+module.exports = { root, exec, download, digest, files, extractWindowsZip, checkMedia, inspectWindowsBinary }

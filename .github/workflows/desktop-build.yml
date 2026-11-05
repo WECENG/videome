@@ -23,17 +23,21 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
           cache: npm
+      - name: Create diagnostic directories
+        run: mkdir -p output release
       - name: Verify runner architecture
         run: node -e "if(process.arch !== '${{ matrix.architecture }}')process.exit(1); console.log(process.platform,process.arch,process.version)"
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci 2>&1 | tee output/dependency-install.log
       - name: Prepare bundled media
-        run: npm run media:prepare
-      - run: npm run media:check
+        run: npm run media:prepare 2>&1 | tee output/media-prepare.log
+      - name: Check bundled media
+        run: npm run media:check 2>&1 | tee output/media-check.log
       - name: Full automated tests
         run: npm test 2>&1 | tee output/automated-tests.log
       - name: Build native packages
@@ -45,7 +49,7 @@ jobs:
           npm run acceptance:fixtures
           node scripts/acceptance-materials.cjs
       - name: Upload packages and reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: Videome-${{ matrix.media }}-${{ github.run_number }}
           retention-days: 30
@@ -59,14 +63,14 @@ jobs:
             output/*.log
       - name: Archive compatible media for local builds
         run: tar -czf release/media-${{ matrix.media }}.tar.gz -C media-bin ${{ matrix.media }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: media-${{ matrix.media }}-${{ github.run_number }}
           retention-days: 30
           path: release/media-*.tar.gz
       - name: Upload failure diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: failure-${{ matrix.media }}-${{ github.run_number }}
           path: |
