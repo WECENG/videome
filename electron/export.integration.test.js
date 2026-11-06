@@ -118,6 +118,27 @@ describe('FFmpeg timeline export', () => {
     expect(JSON.parse(stdout).streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(0)
   }, 30_000)
 
+  it('trims trailing empty timeline time from the last visible picture', () => {
+    const project = {
+      duration: 530,
+      frameRate: { numerator: 30, denominator: 1 },
+      frameSize: { width: 320, height: 180 },
+      assets: [
+        { id: 'source', path: path.join(folder, 'source.mp4'), videoCodec: 'h264', audioCodec: 'aac' },
+        { id: 'music', path: path.join(folder, 'music.wav'), audioCodec: 'pcm_s16le' },
+      ],
+      tracks: [{ id: 'video', type: 'video' }, { id: 'audio', type: 'audio' }],
+      clips: [
+        { id: 'picture', kind: 'video', trackId: 'video', assetId: 'source', start: 0, duration: 2, trimStart: 0, trimEnd: 2, volume: 0 },
+        { id: 'music-clip', kind: 'audio', trackId: 'audio', assetId: 'music', start: 0, duration: 530, trimStart: 0, trimEnd: 530, volume: 0.2, isMusic: true },
+      ],
+    }
+    const plan = buildExportArguments({ preset: 'high', format: 'mp4', videoCodec: 'h264', project }, path.join(folder, 'trimmed-tail.partial.mp4'), null, { encoder: 'libx264' })
+    expect(plan.duration).toBe(2)
+    expect(plan.args).toContain('-t')
+    expect(plan.args[plan.args.indexOf('-t') + 1]).toBe('2')
+  })
+
   it.each([
     ['enabled embedded audio', { volume: 1 }, null, false, 1],
     ['muted embedded audio', { volume: 0 }, null, false, 0],

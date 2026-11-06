@@ -143,9 +143,18 @@ async function removePreviousProjectBackups(projectPath, keepPath, { fileSystem 
     if (error?.code === 'ENOENT') return
     throw error
   }
+  const cleanupErrors = []
   await Promise.all(entries
     .filter((entry) => pattern.test(String(entry)) && path.resolve(path.dirname(sourcePath), entry) !== path.resolve(keepPath))
-    .map((entry) => fileSystem.rm(path.join(path.dirname(sourcePath), entry), { force: true })))
+    .map(async (entry) => {
+      const entryPath = path.join(path.dirname(sourcePath), entry)
+      try {
+        await fileSystem.rm(entryPath, { force: true })
+      } catch (error) {
+        if (error?.code !== 'ENOENT') cleanupErrors.push({ path: entryPath, message: error.message })
+      }
+    }))
+  return cleanupErrors
 }
 
 async function writeProjectBackup(projectPath, project, options = {}) {
@@ -153,8 +162,8 @@ async function writeProjectBackup(projectPath, project, options = {}) {
   const backupPath = projectBackupPath(projectPath, timestamp)
   const snapshot = normalizeProjectForPersistence(project)
   await writeProjectData(backupPath, { ...snapshot, autosavedAt: timestamp.toISOString() }, options)
-  await removePreviousProjectBackups(projectPath, backupPath, options)
-  return { path: backupPath }
+  const cleanupErrors = await removePreviousProjectBackups(projectPath, backupPath, options)
+  return { path: backupPath, cleanupErrors }
 }
 
 module.exports = {

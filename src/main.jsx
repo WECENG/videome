@@ -500,14 +500,33 @@ function App() {
             .catch(() => null)
             .then(async () => {
               if (projectIdentityRef.current !== identity || projectPathRef.current !== currentPath) return
-              localStorage.setItem('videome-autosave', JSON.stringify(projectSnapshot))
-              localStorage.setItem('videome-assets', JSON.stringify(currentProject.assets))
-              writeProjectSession(localStorage, projectSnapshot, currentPath)
+              let recoveryCacheError = null
+              try {
+                localStorage.setItem('videome-autosave', JSON.stringify(projectSnapshot))
+                localStorage.setItem('videome-assets', JSON.stringify(currentProject.assets))
+                writeProjectSession(localStorage, projectSnapshot, currentPath)
+              } catch (error) {
+                recoveryCacheError = error
+              }
+              if (currentPath && !window.videome?.backupProject) {
+                setStatus('当前应用尚未加载自动备份功能，请完全退出并重新打开桌面应用。', 'error')
+                return
+              }
               if (currentPath && window.videome?.backupProject) {
-                await window.videome.backupProject({ project: projectSnapshot, path: currentPath })
+                const backupResult = await window.videome.backupProject({ project: projectSnapshot, path: currentPath })
+                if (backupResult?.cleanupErrors?.length) {
+                  setStatus(`自动备份已完成，但 ${backupResult.cleanupErrors.length} 个旧副本无法清理；请检查文件权限。`, 'info')
+                }
+              }
+              if (recoveryCacheError) {
+                setStatus(`本机恢复缓存写入失败，自动备份已完成：${recoveryCacheError.message || '存储空间不足'}`, 'info')
               }
             })
-            .catch(() => setStatus('自动备份失败；请手动保存工程。', 'error'))
+            .catch((error) => {
+              const message = error?.message || '无法写入备份文件'
+              const restartHint = /No handler registered|backup-project/i.test(message) ? '请完全退出并重新打开桌面应用。' : '请检查工程目录权限。'
+              setStatus(`自动备份失败：${message}；${restartHint}`, 'error')
+            })
         } catch {
           setStatus('本机恢复缓存空间不足；请尽快保存工程。', 'error')
         }

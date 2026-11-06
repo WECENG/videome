@@ -90,7 +90,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
   const width = Math.max(2, Math.ceil(Number(frameSize.width || 1920) / 2) * 2)
   const height = Math.max(2, Math.ceil(Number(frameSize.height || 1080) / 2) * 2)
   const fps = Math.max(1, Number(project.frameRate?.numerator || 30) / Number(project.frameRate?.denominator || 1))
-  const duration = Math.max(Number(project.duration) || 0, ...clips.map((clip) => Number(clip.start) + Number(clip.duration)))
+  const duration = Math.max(0, ...videoClips.map(({ clip }) => Number(clip.start) + Number(clip.duration)))
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('工程时长为空，无法开始导出。')
 
   const preset = settings.preset || project.exportSettings?.preset || 'high'
@@ -135,7 +135,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
         ...(format === 'mp4' || format === 'mov' ? ['-movflags', '+faststart'] : []),
         '-f', format === 'mov' ? 'mov' : format, temporaryOutput,
       ],
-      duration,
+      duration: clip.duration,
       expectedSizeBytes: Number(asset.size || 0),
       warnings: ['複製模式依賴編碼器關鍵影格；剪切點可能自動移動到附近關鍵影格。'],
       inputCount: 1,

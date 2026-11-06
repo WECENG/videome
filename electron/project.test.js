@@ -169,6 +169,23 @@ describe('Videome automatic backups', () => {
     expect(await fs.readFile(projectPath, 'utf8')).toBe(original)
   })
 
+  it('keeps a new backup successful when an old copy cannot be removed', async () => {
+    const { projectPath } = await createWorkspace()
+    const realFs = {
+      ...fs,
+      async rm(target, options) {
+        if (String(target).includes('autosave-20200101-000000')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        return fs.rm(target, options)
+      },
+    }
+    const oldPath = path.join(path.dirname(projectPath), '我的工程.autosave-20200101-000000.videome')
+    await fs.writeFile(oldPath, '{}')
+    const result = await writeProjectBackup(projectPath, { clips: [] }, { fileSystem: realFs })
+    expect(result.path).toMatch(/我的工程\.autosave-\d{8}-\d{6}\.videome$/)
+    expect(result.cleanupErrors).toEqual([{ path: oldPath, message: 'permission denied' }])
+    expect(await fs.readFile(result.path, 'utf8')).toContain('autosavedAt')
+  })
+
   it('does not recreate a missing original project file during backup', async () => {
     const { directory, projectPath } = await createWorkspace()
     await writeProjectBackup(projectPath, { name: '我的工程', clips: [] })
