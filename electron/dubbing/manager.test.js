@@ -43,8 +43,11 @@ describe('dubbing timing and persistent tasks', () => {
       expect(manager.list('other')).toEqual([])
       const updated = await manager.update({ id: 'job', cues: [{ id: 'cue-0', translation: '您好' }] })
       expect(updated.cues[0]).toMatchObject({ translation: '您好', audioPath: null, status: 'draft' })
+      const prosodyUpdated = await manager.update({ id: 'job', cues: [{ id: 'cue-0', translation: '您好。再见。', prosody: { pause: 'strong' } }] })
+      expect(prosodyUpdated.cues[0].prosody.pause).toBe('strong')
+      expect(prosodyUpdated.cues[0].prosody.segments[0].pauseAfterMs).toBeGreaterThan(260)
       const restarted = new DubbingManager({ root }); await restarted.initialized
-      expect(restarted.get('job').cues[0].translation).toBe('您好')
+      expect(restarted.get('job').cues[0].translation).toBe('您好。再见。')
       expect(() => manager.start('job', 'unknown')).toThrow('未知')
     } finally { await fs.rm(root, { recursive: true, force: true }) }
   })

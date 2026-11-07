@@ -140,7 +140,9 @@ class DubbingManager extends EventEmitter {
         const incoming = cues.find((item) => item.id === cue.id)
         const translation = String(incoming?.translation ?? cue.translation).trim()
         if (translation.length > 1000) throw new Error('每句译文不能超过 1000 字。')
-        const prosody = incoming?.prosody ? normalizeProsodyPlan(translation, incoming.prosody, job.style) : analyzeProsody(translation, job.style)
+        const prosody = incoming?.prosody
+          ? analyzeProsody(translation, normalizeStyle({ ...(cue.prosody || {}), ...incoming.prosody }))
+          : analyzeProsody(translation, job.style)
         return { ...cue, translation, prosody, status: 'draft', audioPath: null }
       })
     }
