@@ -279,7 +279,7 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
     })
   }
 
-  const statusText = (item) => ({ created: '待处理', extracting: '提取中', separating: '分离中', recognizing: '识别中', translating: '翻译中', generating: '生成中', review: '待校对', ready: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断' }[item?.status] || item?.stage || '待处理')
+  const statusText = (item) => ({ created: '待处理', extracting: '提取中', separating: '分离中', recognizing: '识别中', translating: '翻译中', generating: '生成中', review: '待校对', ready: '已完成', 'too-long': '超出时长', failed: '失败', cancelled: '已取消', interrupted: '已中断' }[item?.status] || item?.stage || '待处理')
   const failedJobs = batchJobs.filter((item) => ['failed', 'cancelled', 'interrupted'].includes(item.status))
   const appliedCount = batchJobs.filter((item) => appliedJobIds.includes(item.id) || item.clipsApplied || item.status === 'applied').length
   const pendingReadyJobs = readyBatchJobs.filter((item) => !appliedJobIds.includes(item.id) && item.status !== 'applied')

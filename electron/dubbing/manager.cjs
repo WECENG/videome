@@ -327,7 +327,18 @@ class DubbingManager extends EventEmitter {
       filters.push(`[0:a]${job.cues.map((_, index) => `[a${index}]`).join('')}amix=inputs=${job.cues.length + 1}:duration=longest:normalize=0,aresample=48000,alimiter=limit=0.98:latency=1,apad,atrim=duration=${job.source.duration}[mix]`)
       await this.media([...args, '-filter_complex', filters.join(';'), '-map', '[mix]', '-c:a', 'pcm_s16le', output], signal)
       job.mixPath = output; job.status = 'ready'; job.stage = '试听确认后入轨'
-    } else { job.status = 'review'; job.stage = '有译文过长或尚未生成，请修改后重试' }
+    } else {
+      const tooLong = job.cues.filter((cue) => cue.status === 'too-long')
+      const pending = job.cues.filter((cue) => cue.status !== 'ready' && cue.status !== 'too-long')
+      job.status = 'review'
+      if (tooLong.length) {
+        job.stage = `${tooLong.length} 句配音超过原句时长上限，请缩短译文或减弱停顿后重试`
+      } else if (pending.length) {
+        job.stage = `还有 ${pending.length} 句尚未生成，请逐句生成后再试听`
+      } else {
+        job.stage = '配音未完成，请检查当前句后重试'
+      }
+    }
   }
 }
 module.exports = { DubbingManager, timing, normalizedCues, activeStatuses, prosodyInstructions }
