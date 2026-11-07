@@ -77,4 +77,22 @@ describe('local dubbing source and timeline application', () => {
     expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task-2').map((clip) => clip.start)).toEqual([13.5, 13])
     expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task')).toHaveLength(2)
   })
+  it('reuses existing dubbing tracks and clears accidental mute state on later insertions', () => {
+    const source = project()
+    source.clips.push({ ...source.clips[1], id: 'a2', start: 13, trimStart: 10, duration: 4 })
+    const first = applyDubbingResult(source, result(source, 'a'))
+    const secondJob = { ...result(source, 'a2'), id: 'task-2', source: resolveDubbingSource(source, 'a2') }
+    const muted = { ...first, tracks: first.tracks.map((track) => track.label === '中文配音' || track.label === '保留背景' ? { ...track, muted: true } : track) }
+    const next = applyDubbingResult(muted, secondJob)
+    expect(next.tracks.filter((track) => track.label === '中文配音' || track.label === '保留背景')).toHaveLength(2)
+    expect(next.tracks.filter((track) => track.label === '中文配音' || track.label === '保留背景').every((track) => track.muted === false)).toBe(true)
+    expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task-2').every((clip) => clip.muted === false)).toBe(true)
+    expect(next.clips.find((clip) => clip.dubbingSource?.taskId === 'task-2')?.trackId).toBe(first.tracks.find((track) => track.label === '中文配音')?.id)
+  })
+  it('uses the default dubbing gain when the source lane was muted', () => {
+    const source = project()
+    source.clips[1].volume = 0
+    const next = applyDubbingResult(source, result(source))
+    expect(next.clips.find((clip) => clip.dubbingSource?.taskId === 'task' && clip.dubbingSource.cueId)?.volume).toBe(0.82)
+  })
 })

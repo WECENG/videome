@@ -54,7 +54,8 @@ export function applyDubbingResults(project, jobs) {
     applyDubbingResult(project, job)
   }
   let next = applyDubbingResult(project, jobs[0])
-  const tracks = next.tracks.slice(-2)
+  const tracks = next.tracks.filter((track) => track.label === '中文配音' || track.label === '保留背景')
+    .sort((first, second) => first.label === '中文配音' ? -1 : second.label === '中文配音' ? 1 : 0)
   for (const job of jobs.slice(1)) next = applyDubbingResult(next, job, { tracks })
   return next
 }
@@ -88,10 +89,14 @@ export function applyDubbingResult(project, job, { tracks: sharedTracks } = {}) 
         volume: point >= start && until <= end ? 0 : clip.volume }]
     })
   })
+  const existingDubbingTrack = project.tracks.find((track) => track.type === 'audio' && track.label === '中文配音' && !track.locked)
+  const existingBackgroundTrack = project.tracks.find((track) => track.type === 'audio' && track.label === '保留背景' && !track.locked)
   const tracks = sharedTracks || [
-    { id: `dubbing-${job.id}`, type: 'audio', label: '中文配音', accent: 'cyan', order: project.tracks.length, locked: false, muted: false },
-    { id: `background-${job.id}`, type: 'audio', label: '保留背景', accent: 'green', order: project.tracks.length + 1, locked: false, muted: false },
-  ]
+    existingDubbingTrack || { id: `dubbing-${job.id}`, type: 'audio', label: '中文配音', accent: 'cyan', order: project.tracks.length, locked: false, muted: false },
+    existingBackgroundTrack || { id: `background-${job.id}`, type: 'audio', label: '保留背景', accent: 'green', order: project.tracks.length + 1, locked: false, muted: false },
+  ].map((track) => ({ ...track, muted: false }))
+  const sourceGain = Number(source.gain)
+  const dubbingGain = Number.isFinite(sourceGain) && sourceGain > 0 ? sourceGain : 0.82
   const provenance = { taskId: job.id, sourceClipId: source.selectedClipId, sourcePath: source.path, trimStart: source.trimStart, duration: source.duration, models: job.models, backend: job.backend || 'kokoro-fast', style: job.style || { emotion: 'neutral', rate: 1, pause: 'normal' } }
   const entries = [...job.cues.map((cue) => ({ id: cue.id, path: cue.audioPath, name: cue.translation, duration: cue.end - cue.start, offset: cue.start, track: tracks[0], cue })),
     { id: 'background', path: job.backgroundPath, name: `${source.name} · 保留背景`, duration: source.duration, offset: 0, track: tracks[1] }]
@@ -101,6 +106,16 @@ export function applyDubbingResult(project, job, { tracks: sharedTracks } = {}) 
   const additions = entries.map((entry, index) => ({ id: `dub-clip-${job.id}-${entry.id}`, assetId: assets[index].id, path: entry.path,
     trackId: entry.track.id, name: entry.name, kind: 'audio', start: start + entry.offset, duration: entry.duration,
     trimStart: 0, trimEnd: entry.duration, sourceDuration: entry.duration, color: entry.track.accent,
-    volume: source.gain, isMusic: false, dubbingSource: { ...provenance, cueId: entry.cue?.id || null } }))
-  return { ...project, assets: [...project.assets, ...assets], tracks: sharedTracks ? project.tracks : [...project.tracks, ...tracks], clips: [...clips, ...additions] }
+    volume: dubbingGain, muted: false, isMusic: false, dubbingSource: { ...provenance, cueId: entry.cue?.id || null } }))
+  const trackIds = new Set(tracks.map((track) => track.id))
+  const dubbingTrackIds = new Set(project.tracks.filter((track) => track.type === 'audio' && (track.label === '中文配音' || track.label === '保留背景')).map((track) => track.id))
+  const nextTracks = sharedTracks
+    ? project.tracks.map((track) => trackIds.has(track.id) || dubbingTrackIds.has(track.id) ? { ...track, muted: false } : track)
+    : tracks.reduce((current, track) => current.some((item) => item.id === track.id)
+      ? current.map((item) => item.id === track.id ? { ...item, muted: false } : item)
+      : [...current, track], project.tracks)
+  const nextClips = [...clips, ...additions].map((clip) => clip.dubbingSource && dubbingTrackIds.has(clip.trackId)
+    ? { ...clip, muted: false }
+    : clip)
+  return { ...project, assets: [...project.assets, ...assets], tracks: nextTracks, clips: nextClips }
 }

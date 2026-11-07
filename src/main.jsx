@@ -210,6 +210,7 @@ function App() {
   const audioFrameRef = useRef(0)
   const browserSessionRef = useRef(null)
   const previewAttemptRef = useRef(new Set())
+  const previewReadyRef = useRef(new Map())
   const durationProbeAttemptRef = useRef(new Set())
   const previewProxyAttemptRef = useRef(new Set())
   const previewSeekingTimerRef = useRef(null)
@@ -318,6 +319,9 @@ function App() {
     Promise.all(unresolved.map((asset) => attachPreviewTransport(asset))).then((resolved) => {
       if (cancelled) return
       const byId = new Map(resolved.map((asset) => [asset.id, asset]))
+      resolved.forEach((asset) => {
+        if (asset.previewUrl || asset.proxyUrl) previewReadyRef.current.set(asset.id, asset.path || asset.id)
+      })
       const changed = resolved.some((asset) => asset.previewUrl)
       if (!changed) return
       setProject((current) => ({ ...current, assets: current.assets.map((asset) => byId.get(asset.id) || asset) }))
@@ -986,6 +990,9 @@ function App() {
       if (!additions.length) return []
 
       const resolvedAssets = await Promise.all(additions.map((asset) => attachPreviewTransport(asset)))
+      resolvedAssets.forEach((asset) => {
+        if (asset.previewUrl || asset.proxyUrl) previewReadyRef.current.set(asset.id, asset.path || asset.id)
+      })
       const currentLibrary = mergeAssetLibraries(projectRef.current.assets, assets, loadAssets())
       const mergedLibrary = mergeAssetLibraries(currentLibrary, resolvedAssets)
       const libraryAsset = (asset) => mergedLibrary.find((item) => item.id === asset.id || (asset.path && item.path === asset.path)) || asset
@@ -1810,13 +1817,13 @@ function App() {
       setManualTimelineZoom((current) => Math.max(minimumZoom, Math.min(2.4, current * (event.deltaY < 0 ? 1.09 : 0.91))), event.clientX)
       return
     }
-    if (!event.target.closest('.track-canvas')) return
-    event.preventDefault()
+    // Scrolling the timeline is a viewport operation. It must not scrub the
+    // transport, especially while playback is running; only an explicit
+    // click on the ruler or a clip should move the playhead.
     if (event.shiftKey) {
+      event.preventDefault()
       timelineRef.current?.scrollBy({ left: event.deltaY || event.deltaX, behavior: 'instant' })
-      return
     }
-    setPlayhead(Math.max(0, Math.min(duration, project.playhead + (event.deltaY > 0 ? 1 : -1) * Math.min(5, Math.max(1, Math.abs(event.deltaY) / 75)))))
   }
 
   function changeTimelineZoom(nextValue, anchorX = null) {
@@ -2048,6 +2055,33 @@ function App() {
     }
   }
 
+  async function applyDubbingJob(job) {
+    try {
+      const currentProject = projectRef.current
+      const next = Array.isArray(job) ? applyDubbingResults(currentProject, job) : applyDubbingResult(currentProject, job)
+      // Dubbing outputs live under the app data directory. Resolve their
+      // desktop media grants before committing the edit so pressing Play
+      // immediately after insertion never creates an unusable 4179 fallback
+      // URL for the first playback tick.
+      const currentAssetIds = new Set(currentProject.assets.map((asset) => asset.id))
+      const generatedAssets = next.assets.filter((asset) => !currentAssetIds.has(asset.id) && asset.path)
+      const resolvedAssets = await Promise.all(generatedAssets.map((asset) => attachPreviewTransport(asset)))
+      resolvedAssets.forEach((asset) => {
+        if (asset.previewUrl || asset.proxyUrl) previewReadyRef.current.set(asset.id, asset.path || asset.id)
+      })
+      const resolvedById = new Map(resolvedAssets.map((asset) => [asset.id, asset]))
+      const withTransport = {
+        ...next,
+        assets: next.assets.map((asset) => resolvedById.get(asset.id) || asset),
+      }
+      applyEdit('中文配音入轨', () => withTransport, assets)
+      setAssets((current) => mergeAssetLibraries(current, withTransport.assets))
+      setStatus('中文配音与保留背景已入轨，来源范围已静音；可一次撤销。')
+    } catch (error) {
+      setStatus(`中文配音入轨失败：${error.message || '无法读取生成的音频文件。'}`, 'error')
+    }
+  }
+
   useEffect(() => {
     liveTransportRef.current.playing = playing
     if (!playing) {
@@ -2118,33 +2152,77 @@ function App() {
     // Linked source audio is decoded by the paired video element to keep it
     // sample-synchronous; this scheduler handles independent audio clips only.
     const clips = currentProject.clips.filter((clip) => clip.kind === 'audio' && !clip.linkedClipId)
+    const timelineAudioSource = (asset, clip) => {
+      const previewUrl = typeof asset?.previewUrl === 'string' ? asset.previewUrl : ''
+      const stalePreview = previewUrl.includes('/__videome/media?') || previewUrl.startsWith('videome-media://')
+      // Electron must use an authorized videome-media URL. A persisted 4179
+      // browser URL (or a URL while the grant is still being requested) cannot
+      // be decoded by the desktop renderer and would make the clip silent.
+      if (window.videome?.requestMedia && asset?.path && !asset?.proxyUrl) {
+        if (!previewUrl) return null
+        if (stalePreview && previewReadyRef.current.get(asset.id) !== asset.path) return null
+      }
+      return audioPreviewUrl(asset, clip)
+    }
     const activeIds = new Set()
-    const audioSignature = JSON.stringify(clips.filter((clip) => {
+    const activeClips = clips.filter((clip) => {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       return position >= clip.start && position < clip.start + clip.duration
         && !clip.muted && !track?.muted && Number(clip.volume ?? 0.82) > 0
-    }).map((clip) => [clip.id, clip.start, clip.trimStart || 0, clip.volume ?? 0.82]))
-    if (!forceSeek && shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) return
+    })
+    const audioSignature = JSON.stringify(activeClips.map((clip) => {
+      // A generated dubbing asset receives its playable videome-media URL
+      // asynchronously after it is added to the project. Include that URL in
+      // the signature so a failed first attempt using the fallback browser URL
+      // is replaced as soon as the authorized local URL is available.
+      const asset = currentProject.assets.find((item) => item.id === clip.assetId)
+      return [clip.id, clip.start, clip.trimStart || 0, clip.volume ?? 0.82, timelineAudioSource(asset, clip)]
+    }))
+    if (!forceSeek && shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) {
+      const allActivePlayersRunning = activeClips.every((clip) => {
+        const asset = currentProject.assets.find((item) => item.id === clip.assetId)
+        const source = timelineAudioSource(asset, clip)
+        const entry = timelineAudioPlayersRef.current.get(clip.id)
+        return Boolean(source && entry && entry.source === source && !entry.player.paused)
+      })
+      if (allActivePlayersRunning) return
+    }
     activeTimelineAudioSignatureRef.current = shouldPlay ? audioSignature : null
     for (const clip of clips) {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       const active = position >= clip.start && position < clip.start + clip.duration
         && !clip.muted && !track?.muted && Number(clip.volume ?? 0.82) > 0
       const asset = currentProject.assets.find((item) => item.id === clip.assetId)
-      const source = audioPreviewUrl(asset, clip)
+      const source = timelineAudioSource(asset, clip)
       if (!active || !source) continue
 
       activeIds.add(clip.id)
       let entry = timelineAudioPlayersRef.current.get(clip.id)
       if (!entry || entry.source !== source) {
+        if (entry) entry.wantToPlay = false
         entry?.player.pause()
         const player = new Audio(source)
         player.preload = 'auto'
-        entry = { player, source, playErrorReported: false }
+        entry = { player, source, playErrorReported: false, wantToPlay: false, playPending: false, lastPlayAttempt: 0 }
+        player.addEventListener('canplay', () => {
+          if (!entry.wantToPlay || !player.paused || entry.playPending) return
+          const now = Date.now()
+          if (now - entry.lastPlayAttempt < 200) return
+          entry.lastPlayAttempt = now
+          entry.playPending = true
+          player.play().catch((error) => {
+            entry.playPending = false
+            if (entry.playErrorReported) return
+            entry.playErrorReported = true
+            setStatus(`音频「${clip.name}」播放失败：${error.message || '浏览器拒绝了音频播放。'}`, 'error')
+          })
+        })
+        player.addEventListener('playing', () => { entry.playPending = false })
         player.addEventListener('error', () => {
           if (entry.playErrorReported) return
           entry.playErrorReported = true
-          setStatus(`音频「${clip.name}」无法解码，检查本地兼容预览和素材路径。`, 'error')
+          const code = player.error?.code ? `（媒体错误 ${player.error.code}）` : ''
+          setStatus(`音频「${clip.name}」无法解码${code}，检查本地兼容预览和素材路径。`, 'error')
         })
         timelineAudioPlayersRef.current.set(clip.id, entry)
       }
@@ -2156,9 +2234,15 @@ function App() {
       if (Number.isFinite(sourceTime) && (forceSeek || Math.abs(player.currentTime - sourceTime) > (shouldPlay ? 0.35 : 0.04))) player.currentTime = sourceTime
       player.volume = Math.max(0, Math.min(1, Number(clip.volume ?? 0.82)))
       player.muted = false
+      entry.wantToPlay = shouldPlay
 
       if (shouldPlay && player.paused) {
+        const now = Date.now()
+        if (now - entry.lastPlayAttempt < 200 || entry.playPending) continue
+        entry.lastPlayAttempt = now
+        entry.playPending = true
         player.play().catch((error) => {
+          entry.playPending = false
           if (entry.playErrorReported) return
           entry.playErrorReported = true
           setStatus(`音频「${clip.name}」播放失败：${error.message || '无法读取音频源。'}`, 'error')
@@ -2170,6 +2254,7 @@ function App() {
 
     for (const [clipId, entry] of timelineAudioPlayersRef.current) {
       if (activeIds.has(clipId)) continue
+      entry.wantToPlay = false
       if (!entry.player.paused) entry.player.pause()
     }
   }
@@ -2329,7 +2414,7 @@ function App() {
           <button className={`track-icon track-color-${track.accent}`} aria-label={`${track.label}轨道操作`} title="轨道操作：清空内容、删除轨道" aria-haspopup="menu" aria-expanded={timelineMenu?.trackId === track.id} onClick={(event) => openTimelineMenu(event, 'track', track.id)}><TrackIcon type={track.type} /></button>
           <div className="track-name-wrap"><span className="track-index">T{String(trackIndex + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div>
           <div className="track-controls">
-            <button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'muted') }}><VolumeX size={11} className={track.muted ? 'toggle-on' : ''} /></button>
+            <button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'muted') }}>{track.muted ? <VolumeX size={11} className="toggle-on" /> : <Volume2 size={11} />}</button>
             <button className="track-control track-delete-control" aria-label={`删除${track.label}轨道`} title={track.locked ? '轨道已锁定，请先解锁' : `删除「${track.label}」轨道`} disabled={track.locked} onClick={(event) => { event.stopPropagation(); requestTrackDeletion(track.id) }}><Trash2 size={11} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={(event) => { event.stopPropagation(); toggleTrackFor(track.id, 'locked') }}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button>
           </div>
         </div>
@@ -2584,7 +2669,7 @@ function App() {
       <div className="timeline-viewport" ref={timelineRef} onScroll={(event) => syncTrackScroll(event, trackListRef.current)}><div className="timeline-canvas" style={{ width: `${totalWidth}px` }}><div className="timeline-ruler" onClick={(event) => setPlayhead(timelineTimeFromClientX(event.clientX))}><div className="ruler-tick-row">{createTicks(duration, timelineContentWidth).map((tick) => <span className="ruler-tick" key={tick.position} style={{ left: `${tick.position}px` }}><i />{formatCompactTime(tick.seconds)}</span>)}</div>{guideMarkers.map((marker) => <span className="ruler-marker-label" key={marker.id} style={{ left: `${marker.start / duration * timelineContentWidth}px` }}><i />{formatCompactTime(marker.start)}</span>)}</div><div className="track-canvas">{project.tracks.map((track, index) => {
         const clips = project.clips.filter((clip) => clip.trackId === track.id).sort((a, b) => a.start - b.start)
         return <div className={`track-row ${activeTrack?.id === track.id ? 'track-is-active' : ''} track-type-${track.type} ${track.locked ? 'track-is-locked' : ''} ${track.muted ? 'track-is-muted' : ''}`} key={track.id}>
-          <div className="track-info timeline-track-header" onClick={() => { setActiveTrackId(track.id); setSelectedId(clips.find((clip) => clip.id === selectedId)?.id || null) }}><span className={`track-icon track-color-${track.accent}`}><TrackIcon type={track.type} /></span><div className="track-name-wrap"><span className="track-index">T{String(index + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div><div className="track-controls"><button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={() => toggleTrackFor(track.id, 'muted')}><VolumeX size={11} className={track.muted ? 'toggle-on' : ''} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => toggleTrackFor(track.id, 'locked')}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button></div></div>
+          <div className="track-info timeline-track-header" onClick={() => { setActiveTrackId(track.id); setSelectedId(clips.find((clip) => clip.id === selectedId)?.id || null) }}><span className={`track-icon track-color-${track.accent}`}><TrackIcon type={track.type} /></span><div className="track-name-wrap"><span className="track-index">T{String(index + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div><div className="track-controls"><button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={() => toggleTrackFor(track.id, 'muted')}>{track.muted ? <VolumeX size={11} className="toggle-on" /> : <Volume2 size={11} />}</button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => toggleTrackFor(track.id, 'locked')}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button></div></div>
           <div className={`track-clip-lane ${track.type === 'subtitle' ? 'subtitle-lane' : ''} ${track.type === 'audio' ? 'audio-lane' : ''}`} style={{ width: `${totalWidth}px` }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={(event) => handleDrop(event, track)} onPointerDown={(event) => {
             if (event.target.closest('.timeline-clip')) return
             clearTimelineSelection()
@@ -2780,12 +2865,7 @@ function App() {
       {renderTimelineMenu()}
       {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
-      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job) => {
-        const next = Array.isArray(job) ? applyDubbingResults(projectRef.current, job) : applyDubbingResult(projectRef.current, job)
-        applyEdit('中文配音入轨', () => next, assets)
-        setAssets((current) => mergeAssetLibraries(current, next.assets))
-        setStatus('中文配音与保留背景已入轨，来源范围已静音；可一次撤销。')
-      }} onClose={() => setShowDubbing(false)} />}
+      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job) => { void applyDubbingJob(job) }} onClose={() => setShowDubbing(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}
       {renderSubtitleBusy()}
@@ -3040,11 +3120,13 @@ function createTicks(duration, width) {
 }
 
 async function attachPreviewTransport(asset) {
-  if (asset.previewUrl || !asset.path) return asset
+  const staleBrowserUrl = typeof asset.previewUrl === 'string' && asset.previewUrl.includes('/__videome/media?')
+  const staleElectronUrl = typeof asset.previewUrl === 'string' && asset.previewUrl.startsWith('videome-media://')
+  if ((!staleBrowserUrl && !staleElectronUrl && (asset.previewUrl || asset.proxyUrl)) || !asset.path) return asset
   if (window.videome?.requestMedia) {
     const grant = await window.videome.requestMedia([asset.path]).catch(() => null)
     const source = grant?.ok ? grant.files.find((file) => file.path === asset.path)?.url : null
-    return source ? { ...asset, previewUrl: source } : asset
+    return source ? { ...asset, previewUrl: source } : { ...asset, previewUrl: null }
   }
 
   if (!window.__videomeSession) {
