@@ -30,6 +30,7 @@ function prosodyInstructions(prosody = {}) {
   const pause = prosody.pause === 'strong' ? 'Use clearly noticeable pauses between phrases.' : prosody.pause === 'light' ? 'Keep pauses between phrases short and light.' : 'Use natural pauses between phrases.'
   return [emotion ? `Speak with a ${emotion} delivery.` : 'Use a neutral delivery.', pause].join(' ')
 }
+function sameValue(left, right) { return JSON.stringify(left ?? null) === JSON.stringify(right ?? null) }
 
 class DubbingManager extends EventEmitter {
   constructor({ root, models, ffmpeg, ffprobe, resources, gate }) {
@@ -134,24 +135,34 @@ class DubbingManager extends EventEmitter {
   voice(value) { const voice = Number(value); if (!Number.isInteger(voice) || voice < 3 || voice > 102) throw new Error('请选择中文预设音色。'); return voice }
   async update({ id, cues, voice, backend, style }) {
     const job = this.jobs.get(id); if (!job || this.active?.id === id || this.removing.has(id)) throw new Error('任务正在运行或删除，稍后再修改。')
-    if (voice !== undefined && this.voice(voice) !== job.voice) {
-      job.voice = this.voice(voice); job.cues = job.cues.map((cue) => ({ ...cue, status: 'draft', audioPath: null }))
+    const nextVoice = voice === undefined ? job.voice : this.voice(voice)
+    const nextBackend = backend && ['kokoro-fast', 'local-expressive', 'openai-compatible'].includes(backend) ? backend : job.backend
+    const nextStyle = style ? normalizeStyle(style) : job.style
+    const voiceChanged = nextVoice !== job.voice
+    const backendChanged = nextBackend !== job.backend
+    const styleChanged = !sameValue(nextStyle, job.style)
+    if (voiceChanged) {
+      job.voice = nextVoice; job.cues = job.cues.map((cue) => ({ ...cue, status: 'draft', audioPath: null }))
     }
-    if (style) job.style = normalizeStyle(style)
-    if (backend && ['kokoro-fast', 'local-expressive', 'openai-compatible'].includes(backend)) job.backend = backend
+    job.style = nextStyle
+    job.backend = nextBackend
     if (cues) {
       if (!Array.isArray(cues) || cues.length !== job.cues.length) throw new Error('校对句子数量无效。')
       job.cues = job.cues.map((cue) => {
         const incoming = cues.find((item) => item.id === cue.id)
         const translation = String(incoming?.translation ?? cue.translation).trim()
         if (translation.length > 1000) throw new Error('每句译文不能超过 1000 字。')
-        const prosody = incoming?.prosody
+        const hasIncomingProsody = Boolean(incoming?.prosody)
+        const prosody = hasIncomingProsody
           ? analyzeProsody(translation, normalizeStyle({ ...(cue.prosody || {}), ...incoming.prosody }))
-          : analyzeProsody(translation, job.style)
-        return { ...cue, translation, prosody, status: 'draft', audioPath: null }
+          : !styleChanged && translation === cue.translation
+            ? cue.prosody
+            : analyzeProsody(translation, job.style)
+        const cueChanged = voiceChanged || backendChanged || styleChanged || translation !== cue.translation || (hasIncomingProsody && !sameValue(prosody, cue.prosody))
+        return { ...cue, translation, prosody, status: cueChanged ? 'draft' : cue.status, audioPath: cueChanged ? null : cue.audioPath }
       })
     }
-    if ((voice !== undefined || style) && !cues) job.cues = job.cues.map((cue) => ({ ...cue, prosody: analyzeProsody(cue.translation || cue.text, job.style) }))
+    if ((voiceChanged || backendChanged || styleChanged) && !cues) job.cues = job.cues.map((cue) => ({ ...cue, prosody: analyzeProsody(cue.translation || cue.text, job.style), status: 'draft', audioPath: null }))
     job.status = 'review'; job.mixPath = null; await this.save(job); return snapshot(job)
   }
   start(id, action, cueId = null) {

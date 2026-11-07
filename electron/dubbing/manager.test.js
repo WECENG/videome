@@ -13,6 +13,22 @@ describe('dubbing timing and persistent tasks', () => {
     expect(prosodyInstructions({ emotion: 'excited', pause: 'strong' })).toContain('energetic and excited')
     expect(prosodyInstructions({ emotion: 'excited', pause: 'strong' })).toContain('noticeable pauses')
   })
+  it('keeps completed cues when saving another cue', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dubbing-save-cue-'))
+    try {
+      await fs.mkdir(path.join(root, 'job'))
+      const job = { id: 'job', projectId: 'p', status: 'review', createdAt: '2026', voice: 3, backend: 'local-expressive', style: { emotion: 'neutral', rate: 1, pause: 'normal' },
+        cues: [
+          { id: 'cue-0', translation: '第一句', status: 'ready', audioPath: '/first.wav', prosody: { emotion: 'neutral', rate: 1, pause: 'normal', segments: [{ text: '第一句', rate: 1, pauseAfterMs: 0 }] } },
+          { id: 'cue-1', translation: '第二句', status: 'draft', audioPath: null, prosody: { emotion: 'neutral', rate: 1, pause: 'normal', segments: [{ text: '第二句', rate: 1, pauseAfterMs: 0 }] } },
+        ] }
+      await fs.writeFile(path.join(root, 'job', 'job.json'), JSON.stringify(job))
+      const manager = new DubbingManager({ root }); await manager.initialized
+      const updated = await manager.update({ id: 'job', cues: job.cues.map((cue) => ({ id: cue.id, translation: cue.translation, prosody: cue.prosody })) })
+      expect(updated.cues[0]).toMatchObject({ status: 'ready', audioPath: '/first.wav' })
+      expect(updated.cues[1].status).toBe('draft')
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
+  })
   it('accepts binary audio and base64 audio responses from OpenAI-compatible TTS', async () => {
     const wav = Buffer.from('RIFF\x00\x00\x00\x00WAVEfmt ', 'binary')
     const binary = new Response(wav, { headers: { 'content-type': 'audio/wav' } })
