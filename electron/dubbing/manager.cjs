@@ -25,6 +25,11 @@ function normalizedCues(cues, duration) {
     return [{ ...cue, id: `cue-${index}`, start, end, text: String(cue.text).trim() }]
   })
 }
+function prosodyInstructions(prosody = {}) {
+  const emotion = ({ warm: 'warm and gentle', serious: 'serious and restrained', excited: 'energetic and excited', sad: 'low and reflective', calm: 'calm and relaxed' })[prosody.emotion]
+  const pause = prosody.pause === 'strong' ? 'Use clearly noticeable pauses between phrases.' : prosody.pause === 'light' ? 'Keep pauses between phrases short and light.' : 'Use natural pauses between phrases.'
+  return [emotion ? `Speak with a ${emotion} delivery.` : 'Use a neutral delivery.', pause].join(' ')
+}
 
 class DubbingManager extends EventEmitter {
   constructor({ root, models, ffmpeg, ffprobe, resources, gate }) {
@@ -222,13 +227,13 @@ class DubbingManager extends EventEmitter {
   async worker(stage, input, folder, signal, voice) {
     return run(this.models.python, [path.join(this.resources, 'worker.py'), stage, '--models', this.models.directory, '--input', input, '--output', folder, '--voice', String(voice || 3)], { signal, env: { PYTHONNOUSERSITE: '1', HF_HUB_OFFLINE: '1', PYTHONPATH: this.models.directory } })
   }
-  async cloudTts(text, output, signal, speed = 1) {
+  async cloudTts(text, output, signal, prosody = {}) {
     const settings = await this.ttsNetwork?.read?.()
     if (!settings?.baseUrl || !settings.model || !settings.voice || !settings.apiKey) throw new Error('OpenAI 兼容云端尚未配置，请先配置接口地址、模型、音色和 API Key。')
     const request = {
       method: 'POST', signal,
       headers: { authorization: `Bearer ${settings.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: settings.model, input: text, voice: settings.voice, response_format: 'wav', speed: Math.max(0.25, Math.min(4, Number(speed) || 1)) }),
+      body: JSON.stringify({ model: settings.model, input: text, voice: settings.voice, response_format: 'wav', speed: Math.max(0.25, Math.min(4, Number(prosody.rate) || 1)), instructions: prosodyInstructions(prosody) }),
     }
     let lastError
     let sawNotFound = false
@@ -306,7 +311,7 @@ class DubbingManager extends EventEmitter {
     if (cues.length && job.backend !== 'openai-compatible') await this.worker('tts', input, folder, signal, job.voice)
     for (const cue of cues) {
       const natural = path.join(folder, `${cue.id}-natural.wav`)
-      if (job.backend === 'openai-compatible') await this.cloudTts(cue.translation, natural, signal, cue.prosody?.rate || 1)
+      if (job.backend === 'openai-compatible') await this.cloudTts(cue.translation, natural, signal, cue.prosody || {})
       cue.naturalDuration = await this.duration(natural, signal)
       const { speed, fits } = timing(cue.naturalDuration, cue.end - cue.start)
       cue.speed = speed; cue.audioPath = null
@@ -325,4 +330,4 @@ class DubbingManager extends EventEmitter {
     } else { job.status = 'review'; job.stage = '有译文过长或尚未生成，请修改后重试' }
   }
 }
-module.exports = { DubbingManager, timing, normalizedCues, activeStatuses }
+module.exports = { DubbingManager, timing, normalizedCues, activeStatuses, prosodyInstructions }

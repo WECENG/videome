@@ -4,11 +4,15 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 const require = createRequire(import.meta.url)
-const { DubbingManager, timing, normalizedCues } = require('./manager.cjs')
+const { DubbingManager, timing, normalizedCues, prosodyInstructions } = require('./manager.cjs')
 const { readCloudAudio } = require('./tts-response.cjs')
 const { ResourceGate } = require('../batch/manager.cjs')
 
 describe('dubbing timing and persistent tasks', () => {
+  it('builds cloud speech instructions from per-cue emotion and pause settings', () => {
+    expect(prosodyInstructions({ emotion: 'excited', pause: 'strong' })).toContain('energetic and excited')
+    expect(prosodyInstructions({ emotion: 'excited', pause: 'strong' })).toContain('noticeable pauses')
+  })
   it('accepts binary audio and base64 audio responses from OpenAI-compatible TTS', async () => {
     const wav = Buffer.from('RIFF\x00\x00\x00\x00WAVEfmt ', 'binary')
     const binary = new Response(wav, { headers: { 'content-type': 'audio/wav' } })

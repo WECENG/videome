@@ -9,9 +9,11 @@ describe('dubbing prosody planning', () => {
     const plan = analyzeProsody('慢慢来。现在开始！', { emotion: 'excited', rate: 1, pause: 'strong' })
     expect(plan.segments[0].pauseAfterMs).toBeGreaterThan(plan.segments[1].pauseAfterMs)
     expect(plan.segments[1].rate).toBeGreaterThan(plan.segments[0].rate)
+    expect(analyzeProsody('同一句话。', { ratePreset: 'slow', pause: 'strong' }).segments[0].rate).toBe(0.78)
+    expect(analyzeProsody('同一句话。', { ratePreset: 'fast', pause: 'light' }).segments[0].rate).toBe(1.22)
   })
   it('clamps user controls and falls back to neutral defaults', () => {
-    expect(normalizeStyle({ emotion: 'unknown', rate: 3, pause: 'unknown' })).toEqual({ emotion: 'neutral', rate: 1.18, pause: 'normal' })
+    expect(normalizeStyle({ emotion: 'unknown', rate: 3, pause: 'unknown' })).toEqual({ emotion: 'neutral', rate: 1.25, pause: 'normal' })
     expect(normalizeProsodyPlan('你好。', { segments: [{ text: '你好。', rate: 0.2, pauseAfterMs: 2000 }] })).toMatchObject({ segments: [{ rate: 0.78, pauseAfterMs: 900 }] })
   })
 })
