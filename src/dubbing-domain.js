@@ -45,6 +45,23 @@ export function resolveDubbingSources(project, clipIds) {
   return { sources, issues, selectedCount: ids.length, duplicateCount: ids.length - sources.length - issues.length }
 }
 
+// Older projects could persist generated dubbing clips with volume=0 or a
+// muted dubbing track when a source lane was muted during insertion. Generated
+// dubbing is a separate output and should remain audible after reopening.
+export function repairDubbingPlaybackState(project) {
+  const trackIds = new Set((project.tracks || [])
+    .filter((track) => track.type === 'audio' && (track.label === '中文配音' || track.label === '保留背景'))
+    .map((track) => track.id))
+  if (!trackIds.size) return project
+  return {
+    ...project,
+    tracks: project.tracks.map((track) => trackIds.has(track.id) ? { ...track, muted: false } : track),
+    clips: project.clips.map((clip) => clip.dubbingSource && trackIds.has(clip.trackId)
+      ? { ...clip, muted: false, volume: Number(clip.volume) > 0 ? clip.volume : 0.82 }
+      : clip),
+  }
+}
+
 export function applyDubbingResults(project, jobs) {
   if (!jobs.length) throw new Error('请先选择已校对并试听的配音草稿。')
   const audioIds = new Set()

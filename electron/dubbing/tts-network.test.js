@@ -17,10 +17,10 @@ describe('OpenAI-compatible TTS settings', () => {
   it('stores the API key encrypted and exposes only hasApiKey', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'videome-tts-settings-')); roots.push(root)
     const settings = new TtsNetworkSettings(root, secure)
-    await expect(settings.save({ baseUrl: 'https://tts.example/v1', model: 'voice-1', voice: 'alloy', apiKey: 'secret' })).resolves.toEqual({ baseUrl: 'https://tts.example/v1', model: 'voice-1', voice: 'alloy', hasApiKey: true })
+    await expect(settings.save({ baseUrl: 'https://tts.example/v1', model: 'voice-1', voice: 'alloy', apiKey: 'secret' })).resolves.toMatchObject({ baseUrl: 'https://tts.example/v1', model: 'voice-1', voice: 'alloy', hasApiKey: true })
     const stored = await fs.readFile(path.join(root, 'tts-settings.json'), 'utf8')
     expect(stored).not.toContain('secret')
-    expect(await settings.read()).toMatchObject({ apiKey: 'secret' })
+    expect(await settings.read()).toMatchObject({ apiKey: 'secret', plannerModel: 'gpt-6-luna', ttsModel: 'voice-1' })
   })
   it('rejects incomplete or non-http settings', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'videome-tts-settings-')); roots.push(root)

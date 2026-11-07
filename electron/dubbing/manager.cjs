@@ -5,7 +5,7 @@ const { EventEmitter } = require('node:events')
 const { run } = require('./process.cjs')
 const { translationPrompt, translationArguments, parseTranslation } = require('./translation.cjs')
 const { analyzeProsody, normalizeProsodyPlan, normalizeStyle } = require('./prosody.cjs')
-const { ttsEndpointCandidates } = require('./tts-endpoint.cjs')
+const { ttsEndpointCandidates, transcriptionEndpointCandidates, planningEndpointCandidates } = require('./tts-endpoint.cjs')
 const { readCloudAudio } = require('./tts-response.cjs')
 
 const activeStatuses = new Set(['extracting', 'separating', 'recognizing', 'translating', 'generating'])
@@ -57,7 +57,7 @@ class DubbingManager extends EventEmitter {
     }
   }
   get(id) { const job = this.jobs.get(id); if (!job) throw new Error('配音任务不存在。'); return snapshot(job) }
-  async ttsSettings() { return this.ttsNetwork?.publicSettings?.() || { baseUrl: '', model: '', voice: '', hasApiKey: false } }
+  async ttsSettings() { return this.ttsNetwork?.publicSettings?.() || { baseUrl: '', transcriptionModel: '', plannerModel: 'gpt-6-luna', ttsModel: '', model: '', voice: '', hasApiKey: false } }
   async saveTtsSettings(settings) { if (!this.ttsNetwork) throw new Error('云端配音配置不可用。'); return this.ttsNetwork.save(settings) }
   async testTtsSettings(settings) { if (!this.ttsNetwork) throw new Error('云端配音配置不可用。'); return this.ttsNetwork.test(settings) }
   list(projectId) { return [...this.jobs.values()].filter((job) => job.projectId === projectId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(snapshot) }
@@ -112,15 +112,16 @@ class DubbingManager extends EventEmitter {
   }
   async create({ source, projectId, voice = 3, action = 'analyze', backend = 'kokoro-fast', style = {} }) {
     if (!['analyze', 'auto'].includes(action)) throw new Error('未知配音流程。')
-    if (!(await this.models.status()).ready) throw new Error('请先安装本地配音模型。')
+    if (backend !== 'openai-cloud' && !(await this.models.status()).ready) throw new Error('请先安装本地配音模型。')
     if (!projectId || !source?.path || !path.isAbsolute(source.path) || !source.snapshot || !(source.duration > 0) || source.duration > 1800 || !Number.isFinite(source.trimStart) || source.trimStart < 0 || !Number.isFinite(source.start) || source.start < 0) throw new Error('来源片段参数无效。')
     const stat = await fs.stat(source.path)
-    const selectedBackend = ['kokoro-fast', 'local-expressive', 'openai-compatible'].includes(backend) ? backend : 'kokoro-fast'
-    if (selectedBackend === 'openai-compatible') {
+    const selectedBackend = ['kokoro-fast', 'local-expressive', 'openai-compatible', 'openai-cloud'].includes(backend) ? backend : 'kokoro-fast'
+    if (selectedBackend === 'openai-compatible' || selectedBackend === 'openai-cloud') {
       const cloud = await this.ttsNetwork?.read?.()
-      if (!cloud?.baseUrl || !cloud.model || !cloud.voice || !cloud.apiKey) throw new Error('OpenAI 兼容云端尚未配置，请先配置接口地址、模型、音色和 API Key。')
+      if (!cloud?.baseUrl || !(cloud.ttsModel || cloud.model) || !cloud.voice || !cloud.apiKey) throw new Error('OpenAI 兼容云端尚未配置，请先配置接口地址、TTS 模型、音色和 API Key。')
+      if (selectedBackend === 'openai-cloud' && (!cloud.transcriptionModel || !cloud.plannerModel)) throw new Error('云端全流程还需要配置转写模型和规划模型。')
     }
-    const job = { id: crypto.randomUUID(), projectId, source, fingerprint: { size: stat.size, mtimeMs: stat.mtimeMs }, voice: this.voice(voice), backend: selectedBackend, style: normalizeStyle(style),
+    const job = { id: crypto.randomUUID(), projectId, source, fingerprint: { size: stat.size, mtimeMs: stat.mtimeMs }, voice: selectedBackend === 'openai-cloud' ? 3 : this.voice(voice), backend: selectedBackend, style: normalizeStyle(style),
       models: { version: this.models.manifest.version, mrx: '19b3de8', whisper: 'small.en / pywhispercpp 1.5.1', qwen: 'Qwen3-4B-Q4_K_M / llama b5401', kokoro: 'v1.1-zh / sherpa-onnx 2.0.1' },
       status: 'created', stage: '等待提取音频', cues: [], createdAt: new Date().toISOString() }
     await fs.mkdir(path.join(this.root, job.id)); this.jobs.set(job.id, job); await this.save(job)
@@ -135,8 +136,8 @@ class DubbingManager extends EventEmitter {
   voice(value) { const voice = Number(value); if (!Number.isInteger(voice) || voice < 3 || voice > 102) throw new Error('请选择中文预设音色。'); return voice }
   async update({ id, cues, voice, backend, style }) {
     const job = this.jobs.get(id); if (!job || this.active?.id === id || this.removing.has(id)) throw new Error('任务正在运行或删除，稍后再修改。')
-    const nextVoice = voice === undefined ? job.voice : this.voice(voice)
-    const nextBackend = backend && ['kokoro-fast', 'local-expressive', 'openai-compatible'].includes(backend) ? backend : job.backend
+    const nextVoice = job.backend === 'openai-cloud' ? 3 : (voice === undefined ? job.voice : this.voice(voice))
+    const nextBackend = backend && ['kokoro-fast', 'local-expressive', 'openai-compatible', 'openai-cloud'].includes(backend) ? backend : job.backend
     const nextStyle = style ? normalizeStyle(style) : job.style
     const voiceChanged = nextVoice !== job.voice
     const backendChanged = nextBackend !== job.backend
@@ -180,12 +181,12 @@ class DubbingManager extends EventEmitter {
     const controller = new AbortController(); this.active = { id, controller }
     const promise = (async () => {
       try {
-        if (!(await this.models.status()).ready) throw new Error('本地配音模型不可用，请检查安装。')
+        if (job.backend !== 'openai-cloud' && !(await this.models.status()).ready) throw new Error('本地配音模型不可用，请检查安装。')
         const stat = await fs.stat(job.source.path)
         if (stat.size !== job.fingerprint.size || stat.mtimeMs !== job.fingerprint.mtimeMs) throw new Error('源文件已变化，请重新创建任务。')
         const disk = await fs.statfs(this.root)
         if (Number(disk.bavail) * Number(disk.bsize) < 1e9 + job.source.duration * 2e6) throw new Error('配音生成可用磁盘空间不足，请释放空间后重试。')
-        if (action === 'analyze' || action === 'auto') await this.analyze(job, controller.signal)
+        if (action === 'analyze' || action === 'auto') await (job.backend === 'openai-cloud' ? this.analyzeCloud(job, controller.signal) : this.analyze(job, controller.signal))
         else if (action === 'translate') await this.translate(job, controller.signal)
         if (action === 'generate' || action === 'auto') await this.generate(job, controller.signal, cueId)
         job.error = null
@@ -238,13 +239,67 @@ class DubbingManager extends EventEmitter {
   async worker(stage, input, folder, signal, voice) {
     return run(this.models.python, [path.join(this.resources, 'worker.py'), stage, '--models', this.models.directory, '--input', input, '--output', folder, '--voice', String(voice || 3)], { signal, env: { PYTHONNOUSERSITE: '1', HF_HUB_OFFLINE: '1', PYTHONPATH: this.models.directory } })
   }
+  async cloudTranscribe(inputPath, signal) {
+    const settings = await this.ttsNetwork?.read?.()
+    if (!settings?.baseUrl || !settings.transcriptionModel || !settings.apiKey) throw new Error('云端转写模型尚未配置。')
+    const bytes = await fs.readFile(inputPath)
+    let lastError
+    for (const endpoint of transcriptionEndpointCandidates(settings.baseUrl)) {
+      const form = new FormData()
+      form.append('file', new Blob([bytes], { type: 'audio/wav' }), path.basename(inputPath))
+      form.append('model', settings.transcriptionModel)
+      form.append('response_format', 'verbose_json')
+      let response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${settings.apiKey}` }, body: form, signal })
+      if (response.status === 400) {
+        const fallback = new FormData()
+        fallback.append('file', new Blob([bytes], { type: 'audio/wav' }), path.basename(inputPath))
+        fallback.append('model', settings.transcriptionModel)
+        response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${settings.apiKey}` }, body: fallback, signal })
+      }
+      if (response.status === 404 || response.status === 405) { lastError = new Error(`云端转写接口返回 HTTP ${response.status}。`); continue }
+      if (!response.ok) throw new Error(`云端转写失败（HTTP ${response.status}）。`)
+      const payload = await response.json().catch(() => null)
+      if (!payload?.text && !payload?.segments?.length) throw new Error('云端转写未返回有效文本。')
+      return payload
+    }
+    throw lastError || new Error('云端转写接口不可用。')
+  }
+  async cloudPlan(transcript, duration, signal) {
+    const settings = await this.ttsNetwork?.read?.()
+    if (!settings?.baseUrl || !settings.plannerModel || !settings.apiKey) throw new Error('云端规划模型尚未配置。')
+    const prompt = `你是影视配音编导。请把英文转写内容翻译成自然简体中文，并按时间切成适合配音的句子。只返回 JSON，不要 Markdown。格式：{"cues":[{"start":0,"end":1.2,"text":"英文","translation":"中文","emotion":"neutral","rate":1,"pauseAfterMs":80}]}。总时长 ${duration} 秒。英文转写：${JSON.stringify(transcript)}`
+    const request = { model: settings.plannerModel, messages: [{ role: 'system', content: '只输出合法 JSON。' }, { role: 'user', content: prompt }], temperature: 0.2, response_format: { type: 'json_object' } }
+    let lastError
+    for (const endpoint of planningEndpointCandidates(settings.baseUrl)) {
+      const response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${settings.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(request), signal })
+      if (response.status === 404 || response.status === 405) { lastError = new Error(`云端规划接口返回 HTTP ${response.status}。`); continue }
+      if (response.status === 400) {
+        const fallback = { ...request }; delete fallback.response_format
+        response = await fetch(endpoint, { method: 'POST', headers: { authorization: `Bearer ${settings.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(fallback), signal })
+      }
+      if (!response.ok) throw new Error(`云端规划失败（HTTP ${response.status}）。`)
+      const payload = await response.json().catch(() => null)
+      const content = payload?.choices?.[0]?.message?.content
+      let parsed
+      try { parsed = JSON.parse(typeof content === 'string' ? content : JSON.stringify(content || {})) } catch { throw new Error('云端规划返回了无法解析的 JSON。') }
+      if (!Array.isArray(parsed.cues) || !parsed.cues.length) throw new Error('云端规划未返回有效句子。')
+      return parsed.cues
+    }
+    throw lastError || new Error('云端规划接口不可用。')
+  }
   async cloudTts(text, output, signal, prosody = {}) {
     const settings = await this.ttsNetwork?.read?.()
-    if (!settings?.baseUrl || !settings.model || !settings.voice || !settings.apiKey) throw new Error('OpenAI 兼容云端尚未配置，请先配置接口地址、模型、音色和 API Key。')
+    const ttsModel = settings?.ttsModel || settings?.model
+    if (!settings?.baseUrl || !ttsModel || !settings.voice || !settings.apiKey) throw new Error('OpenAI 兼容云端尚未配置，请先配置接口地址、TTS 模型、音色和 API Key。')
+    const requestBody = {
+      model: ttsModel, input: text, voice: settings.voice, response_format: 'wav',
+      speed: Math.max(0.25, Math.min(4, Number(prosody.rate) || 1)),
+      instructions: prosodyInstructions(prosody),
+    }
     const request = {
       method: 'POST', signal,
       headers: { authorization: `Bearer ${settings.apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: settings.model, input: text, voice: settings.voice, response_format: 'wav', speed: Math.max(0.25, Math.min(4, Number(prosody.rate) || 1)), instructions: prosodyInstructions(prosody) }),
+      body: JSON.stringify(requestBody),
     }
     let lastError
     let sawNotFound = false
@@ -256,6 +311,16 @@ class DubbingManager extends EventEmitter {
         await fs.writeFile(output, await readCloudAudio(response))
         return
       } catch (error) {
+        // Some OpenAI-compatible gateways implement speech but reject the
+        // optional instructions field. Retry the same endpoint once with the
+        // portable request shape before trying the next URL.
+        if (response.status === 400 && requestBody.instructions) {
+          const portable = { ...request, body: JSON.stringify({ ...requestBody, instructions: undefined }) }
+          const retry = await fetch(endpoint, portable)
+          if (retry.ok) {
+            try { await fs.writeFile(output, await readCloudAudio(retry)); return } catch (retryError) { lastError = retryError }
+          }
+        }
         if (error.code !== 'INVALID_AUDIO_RESPONSE') throw error
         lastError = error
       }
@@ -293,6 +358,41 @@ class DubbingManager extends EventEmitter {
     for (const cue of job.cues) cue.prosody = cue.prosody || analyzeProsody(cue.translation || cue.text, job.style)
     await this.translate(job, signal)
   }
+  async analyzeCloud(job, signal) {
+    const folder = path.join(this.root, job.id)
+    const extracted = path.join(folder, 'source.wav')
+    const speech = path.join(folder, 'speech.wav')
+    const background = path.join(folder, 'background.wav')
+    if (!job.extracted) {
+      await this.phase(job, 'extracting', '准备云端识别音频')
+      await this.media(['-ss', String(job.source.trimStart), '-i', job.source.path, '-t', String(job.source.duration), '-vn', '-map', '0:a:0', '-ac', '2', '-ar', '44100', extracted], signal)
+      job.extracted = true; await this.save(job)
+    }
+    if (!job.backgroundPath) {
+      await this.phase(job, 'separating', '准备背景音 · 云端全流程')
+      // A pure cloud setup may not have the local separation model. Keep the
+      // extracted source as the background fallback; a configured local
+      // separator can still be used by the local workflow.
+      await this.media(['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', String(job.source.duration), '-c:a', 'pcm_s16le', background], signal)
+      job.backgroundPath = background; await this.save(job)
+    }
+    await this.media(['-i', extracted, '-ar', '16000', '-ac', '1', speech], signal)
+    await this.phase(job, 'recognizing', '云端语音识别')
+    const transcript = await this.cloudTranscribe(speech, signal)
+    await this.phase(job, 'translating', `云端翻译与韵律规划 · ${((await this.ttsNetwork.read()).plannerModel) || 'Sol/Luna'}`)
+    const planned = await this.cloudPlan(transcript, job.source.duration, signal)
+    const plannedRows = planned.map((cue) => ({ plan: cue, start: cue.start, end: cue.end, text: cue.text || cue.sourceText })).filter((row) => row.text)
+    job.cues = normalizedCues(plannedRows, job.source.duration)
+      .map((cue, index) => {
+        const plan = plannedRows[index]?.plan || {}
+        const translation = String(plan.translation || '').trim()
+        if (!translation) throw new Error('云端规划未返回有效中文译文。')
+        const prosody = analyzeProsody(translation, { emotion: plan.emotion || job.style.emotion, rate: Number(plan.rate) || job.style.rate, pause: plan.pause || job.style.pause })
+        return { ...cue, translation, prosody, status: 'draft', audioPath: null }
+      })
+    if (!job.cues.length) throw new Error('云端未识别到有效对白。')
+    job.status = 'review'; job.stage = '云端规划完成，准备生成语音'; job.percent = 100; job.error = null; await this.save(job)
+  }
   async translate(job, signal) {
     const folder = path.join(this.root, job.id)
     await this.phase(job, 'translating', '本地翻译中文 · Qwen3 4B')
@@ -311,7 +411,7 @@ class DubbingManager extends EventEmitter {
   }
   async generate(job, signal, cueId) {
     const folder = path.join(this.root, job.id)
-    const generationStage = job.backend === 'openai-compatible'
+    const generationStage = job.backend === 'openai-compatible' || job.backend === 'openai-cloud'
       ? '云端生成中文配音 · OpenAI 兼容接口'
       : job.backend === 'kokoro-fast'
         ? '本地生成中文配音 · Kokoro v1.1-zh'
@@ -319,10 +419,10 @@ class DubbingManager extends EventEmitter {
     await this.phase(job, 'generating', generationStage)
     const cues = job.cues.filter((cue) => cueId ? cue.id === cueId : cue.status !== 'ready')
     const input = path.join(folder, 'tts-input.json'); await fs.writeFile(input, JSON.stringify(cues))
-    if (cues.length && job.backend !== 'openai-compatible') await this.worker('tts', input, folder, signal, job.voice)
+    if (cues.length && job.backend !== 'openai-compatible' && job.backend !== 'openai-cloud') await this.worker('tts', input, folder, signal, job.voice)
     for (const cue of cues) {
       const natural = path.join(folder, `${cue.id}-natural.wav`)
-      if (job.backend === 'openai-compatible') await this.cloudTts(cue.translation, natural, signal, cue.prosody || {})
+      if (job.backend === 'openai-compatible' || job.backend === 'openai-cloud') await this.cloudTts(cue.translation, natural, signal, cue.prosody || {})
       cue.naturalDuration = await this.duration(natural, signal)
       const { speed, fits } = timing(cue.naturalDuration, cue.end - cue.start)
       cue.speed = speed; cue.audioPath = null

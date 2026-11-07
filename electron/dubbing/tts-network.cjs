@@ -1,10 +1,10 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const crypto = require('node:crypto')
-const { ttsEndpointCandidates } = require('./tts-endpoint.cjs')
+const { ttsEndpointCandidates, transcriptionEndpointCandidates, planningEndpointCandidates } = require('./tts-endpoint.cjs')
 const { readCloudAudio } = require('./tts-response.cjs')
 
-const DEFAULT_SETTINGS = { baseUrl: '', model: '', voice: '', apiKey: '' }
+const DEFAULT_SETTINGS = { baseUrl: '', transcriptionModel: '', plannerModel: 'gpt-6-luna', ttsModel: '', voice: '', apiKey: '' }
 
 class TtsNetworkSettings {
   constructor(root, secureStorage) { this.file = path.join(root, 'tts-settings.json'); this.secureStorage = secureStorage; this.current = null }
@@ -19,14 +19,14 @@ class TtsNetworkSettings {
     this.current = { ...DEFAULT_SETTINGS, ...stored, ...auth }; delete this.current.encryptedApiKey
     return { ...this.current }
   }
-  async publicSettings() { const value = await this.read(); return { baseUrl: value.baseUrl, model: value.model, voice: value.voice, hasApiKey: Boolean(value.apiKey) } }
+  async publicSettings() { const value = await this.read(); return { baseUrl: value.baseUrl, transcriptionModel: value.transcriptionModel, plannerModel: value.plannerModel, ttsModel: value.ttsModel || value.model, model: value.model, voice: value.voice, hasApiKey: Boolean(value.apiKey) } }
   async test(input = {}) {
     const previous = await this.read()
     const baseUrl = String(input.baseUrl || '').trim().replace(/\/$/, '')
-    const model = String(input.model || '').trim()
+    const model = String(input.ttsModel || input.model || '').trim()
     const voice = String(input.voice || '').trim()
     const apiKey = String(input.apiKey || '') || (input.keepApiKey ? previous.apiKey : '')
-    if (!/^https?:\/\//i.test(baseUrl) || !model || !voice || !apiKey) throw new Error('请先填写接口地址、模型、云端音色和 API Key。')
+    if (!/^https?:\/\//i.test(baseUrl) || !model || !voice || !apiKey) throw new Error('请先填写接口地址、TTS 模型、云端音色和 API Key。')
     const startedAt = Date.now()
     let response
     let lastError
@@ -56,16 +56,16 @@ class TtsNetworkSettings {
   async save(input = {}) {
     const baseUrl = String(input.baseUrl || '').trim().replace(/\/$/, '')
     if (baseUrl && !/^https?:\/\//i.test(baseUrl)) throw new Error('云端配音地址必须是 HTTP/HTTPS URL。')
-    const model = String(input.model || '').trim(); const voice = String(input.voice || '').trim()
+    const model = String(input.ttsModel || input.model || '').trim(); const voice = String(input.voice || '').trim()
     let apiKey = String(input.apiKey || '')
     const previous = await this.read()
     if (!apiKey && input.keepApiKey) apiKey = previous.apiKey
-    if (!baseUrl || !model || !voice) throw new Error('请填写云端配音地址、模型和音色。')
+    if (!baseUrl || !model || !voice) throw new Error('请填写云端配音地址、TTS 模型和音色。')
     if (!this.secureStorage?.isEncryptionAvailable?.() || this.secureStorage.getSelectedStorageBackend?.() === 'basic_text') throw new Error('系统安全存储不可用，无法保存云端 API Key。')
-    const stored = { baseUrl, model, voice, encryptedApiKey: this.secureStorage.encryptString(apiKey).toString('base64') }
+    const stored = { baseUrl, transcriptionModel: String(input.transcriptionModel || '').trim(), plannerModel: String(input.plannerModel || DEFAULT_SETTINGS.plannerModel).trim(), ttsModel: model, model, voice, encryptedApiKey: this.secureStorage.encryptString(apiKey).toString('base64') }
     const temporary = `${this.file}.${crypto.randomUUID()}.tmp`
     await fs.mkdir(path.dirname(this.file), { recursive: true }); await fs.writeFile(temporary, JSON.stringify(stored, null, 2), { mode: 0o600 }); await fs.rename(temporary, this.file)
-    this.current = { baseUrl, model, voice, apiKey }; return this.publicSettings()
+    this.current = { ...stored, baseUrl, transcriptionModel: stored.transcriptionModel, plannerModel: stored.plannerModel, ttsModel: model, model, voice, apiKey }; return this.publicSettings()
   }
 }
 

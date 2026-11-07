@@ -104,7 +104,7 @@ import {
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
 import DubbingPanel from './DubbingPanel.jsx'
-import { applyDubbingResult, applyDubbingResults } from './dubbing-domain.js'
+import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState } from './dubbing-domain.js'
 import { moveTimelineClips, removeTimelineClips, selectTimelineClips, timelineMoveIds } from './timeline-selection.js'
 import { DeleteTrackDialog, TimelineTrackMenu } from './TimelineTrackMenu.jsx'
 import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
@@ -211,6 +211,7 @@ function App() {
   const browserSessionRef = useRef(null)
   const previewAttemptRef = useRef(new Set())
   const previewReadyRef = useRef(new Map())
+  const timelineMediaGrantRef = useRef(new Set())
   const durationProbeAttemptRef = useRef(new Set())
   const previewProxyAttemptRef = useRef(new Set())
   const previewSeekingTimerRef = useRef(null)
@@ -2164,11 +2165,27 @@ function App() {
       }
       return audioPreviewUrl(asset, clip)
     }
+    const requestTimelineMedia = (asset) => {
+      if (!window.videome?.requestMedia || !asset?.id || !asset.path || timelineMediaGrantRef.current.has(asset.id)) return
+      timelineMediaGrantRef.current.add(asset.id)
+      void window.videome.requestMedia([asset.path]).then((grant) => {
+        const source = grant?.ok ? grant.files.find((file) => file.path === asset.path)?.url : null
+        if (!source) {
+          timelineMediaGrantRef.current.delete(asset.id)
+          return
+        }
+        previewReadyRef.current.set(asset.id, asset.path)
+        setProject((current) => ({ ...current, assets: current.assets.map((item) => item.id === asset.id ? { ...item, previewUrl: source, missing: false } : item) }))
+        setAssets((current) => current.map((item) => item.id === asset.id ? { ...item, previewUrl: source, missing: false } : item))
+        activeTimelineAudioSignatureRef.current = null
+      }).catch(() => timelineMediaGrantRef.current.delete(asset.id))
+    }
     const activeIds = new Set()
+    const effectiveVolume = (clip) => clip.dubbingSource && Number(clip.volume) <= 0 ? 0.82 : Number(clip.volume ?? 0.82)
     const activeClips = clips.filter((clip) => {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       return position >= clip.start && position < clip.start + clip.duration
-        && !clip.muted && !track?.muted && Number(clip.volume ?? 0.82) > 0
+        && !clip.muted && !track?.muted && effectiveVolume(clip) > 0
     })
     const audioSignature = JSON.stringify(activeClips.map((clip) => {
       // A generated dubbing asset receives its playable videome-media URL
@@ -2176,7 +2193,7 @@ function App() {
       // the signature so a failed first attempt using the fallback browser URL
       // is replaced as soon as the authorized local URL is available.
       const asset = currentProject.assets.find((item) => item.id === clip.assetId)
-      return [clip.id, clip.start, clip.trimStart || 0, clip.volume ?? 0.82, timelineAudioSource(asset, clip)]
+      return [clip.id, clip.start, clip.trimStart || 0, effectiveVolume(clip), timelineAudioSource(asset, clip)]
     }))
     if (!forceSeek && shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) {
       const allActivePlayersRunning = activeClips.every((clip) => {
@@ -2191,9 +2208,10 @@ function App() {
     for (const clip of clips) {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       const active = position >= clip.start && position < clip.start + clip.duration
-        && !clip.muted && !track?.muted && Number(clip.volume ?? 0.82) > 0
+        && !clip.muted && !track?.muted && effectiveVolume(clip) > 0
       const asset = currentProject.assets.find((item) => item.id === clip.assetId)
       const source = timelineAudioSource(asset, clip)
+      if (!source) requestTimelineMedia(asset)
       if (!active || !source) continue
 
       activeIds.add(clip.id)
@@ -2232,7 +2250,7 @@ function App() {
       const sourceDuration = Number(clip.sourceDuration || asset?.duration || player.duration || 0)
       const sourceTime = clip.repeat && sourceDuration > 0 ? offset % sourceDuration : Math.min(offset, Math.max(0, (player.duration || sourceDuration || offset) - 0.04))
       if (Number.isFinite(sourceTime) && (forceSeek || Math.abs(player.currentTime - sourceTime) > (shouldPlay ? 0.35 : 0.04))) player.currentTime = sourceTime
-      player.volume = Math.max(0, Math.min(1, Number(clip.volume ?? 0.82)))
+      player.volume = Math.max(0, Math.min(1, effectiveVolume(clip)))
       player.muted = false
       entry.wantToPlay = shouldPlay
 
@@ -3336,7 +3354,7 @@ function hydrateProject(project) {
     if (!isLegacySilentPreviewProxy(asset.previewUrl) && !isLegacySilentPreviewProxy(asset.proxyUrl)) return asset
     return { ...asset, previewUrl: null, proxyUrl: null }
   }) : []
-  return {
+  const hydrated = {
     ...defaultProject,
     ...source,
     schemaVersion: 1,
@@ -3349,6 +3367,7 @@ function hydrateProject(project) {
     clips: repairSplitAudioDuplicates(Array.isArray(source.clips) ? source.clips : []),
     assets,
   }
+  return repairDubbingPlaybackState(hydrated)
 }
 
 function normalizeProjectForPersistence(project) {

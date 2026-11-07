@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyDubbingResult, applyDubbingResults, resolveDubbingSource, resolveDubbingSources } from './dubbing-domain.js'
+import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState, resolveDubbingSource, resolveDubbingSources } from './dubbing-domain.js'
 
 const project = () => ({ projectId: 'project', duration: 20, assets: [{ id: 'asset', path: '/source.mp4', audioCodec: 'aac' }],
   tracks: [{ id: 'v', type: 'video', locked: true }, { id: 'a', type: 'audio' }, { id: 'm', type: 'audio' }],
@@ -94,5 +94,13 @@ describe('local dubbing source and timeline application', () => {
     source.clips[1].volume = 0
     const next = applyDubbingResult(source, result(source))
     expect(next.clips.find((clip) => clip.dubbingSource?.taskId === 'task' && clip.dubbingSource.cueId)?.volume).toBe(0.82)
+  })
+  it('repairs muted historical dubbing clips when reopening a project', () => {
+    const repaired = repairDubbingPlaybackState({
+      tracks: [{ id: 'dub', type: 'audio', label: '中文配音', muted: true }],
+      clips: [{ id: 'clip', trackId: 'dub', kind: 'audio', volume: 0, muted: false, dubbingSource: { taskId: 'old' } }],
+    })
+    expect(repaired.tracks[0].muted).toBe(false)
+    expect(repaired.clips[0]).toMatchObject({ volume: 0.82, muted: false })
   })
 })
