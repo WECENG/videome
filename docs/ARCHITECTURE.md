@@ -11,6 +11,7 @@ React 编辑器 main.jsx / 批量面板 BatchMixPanel.jsx
 preload.cjs → main.cjs
         ├── project.cjs：工程保存、写队列和空时间线覆盖前备份
         ├── export.cjs / preview.cjs：普通导出与预览参数
+        ├── dubbing/：本地模型安装、配音任务、阶段进程与任务恢复
         ├── runtime.cjs：工具、字体、编码器与路径处理
         ├── filesystem.cjs / processes.cjs：平台文件操作和进程终止
         └── batch/
@@ -82,6 +83,7 @@ Windows 不执行 POSIX 目录 fsync；文件仍刷新并保留备份，不宣�
 - 工程：`openProject`、`saveProject`、`saveProjectFile`、`chooseProjectLocation`、`getStorageLocations`、`showProjectInFolder`。
 - 媒体：`pickMedia`、`probeMedia`、`requestMedia`、`createPreviewProxy`、`exportFrame`、`exportMedia`、`cancelExport`。
 - 批量：`createBatchMixAnalysis` 返回 `jobId`；配合 get/list、start/pause/resume/cancel/retry、create-project、remove/cache 和 `onBatchMixProgress`。方法名以 `preload.cjs` 为准。
+- 配音：`dubbingModels`、`installDubbingModels`、`createDubbingJob`、`getDubbingJob`、`updateDubbingJob`、`startDubbingJob`、`cancelDubbingJob` 和 `onDubbingProgress`。模型与任务文件位于应用用户数据目录，不写入工程文件。
 
 媒体协议验证目录包含关系和授权；浏览器 API 限制本机来源、会话令牌和允许根目录。本地服务不用于公网部署。没有云端推理或媒体上传流程；依赖准备和首次构建需要网络下载。
 

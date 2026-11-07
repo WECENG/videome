@@ -85,12 +85,10 @@ import {
   makeMediaAsset,
   mergeAssetLibraries,
   mergeAssetsByPath,
-  moveClipWithLinked,
   toggleOrderedSelection,
   parseSrt,
   parseSubtitleFile,
   removeAssetReferences,
-  removeClip,
   removeTrack,
   removeTrackClips,
   replaceAssetById,
@@ -105,6 +103,9 @@ import {
 } from './domain.js'
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
+import DubbingPanel from './DubbingPanel.jsx'
+import { applyDubbingResult, applyDubbingResults } from './dubbing-domain.js'
+import { moveTimelineClips, removeTimelineClips, selectTimelineClips, timelineMoveIds } from './timeline-selection.js'
 import { DeleteTrackDialog, TimelineTrackMenu } from './TimelineTrackMenu.jsx'
 import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
 
@@ -187,6 +188,7 @@ function App() {
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [showExport, setShowExport] = useState(false)
   const [showBatchMix, setShowBatchMix] = useState(false)
+  const [showDubbing, setShowDubbing] = useState(false)
   const [musicFiles, setMusicFiles] = useState([])
   const [recordingMusic, setRecordingMusic] = useState(null)
   const [previewSeeking, setPreviewSeeking] = useState(false)
@@ -220,6 +222,7 @@ function App() {
   const projectEpochRef = useRef(0)
   const projectIdentityRef = useRef(0)
   const selectedClipIdsRef = useRef([])
+  const timelineSelectionAnchorRef = useRef(null)
   const selectedAssetIdsRef = useRef([])
   const assetPointerSelectionRef = useRef(null)
   const toastTimerRef = useRef(null)
@@ -233,6 +236,12 @@ function App() {
     projectRef.current = project
     projectPathRef.current = projectPath
   }, [project, projectPath])
+
+  useEffect(() => {
+    const retained = selectedClipIdsRef.current.filter((id) => project.clips.some((clip) => clip.id === id))
+    if (retained.length !== selectedClipIdsRef.current.length) updateSelectedClipIds(retained)
+    if (!project.clips.some((clip) => clip.id === timelineSelectionAnchorRef.current)) timelineSelectionAnchorRef.current = null
+  }, [project.clips])
 
   useEffect(() => {
     if (!window.videome?.onOpenProjectFile) return undefined
@@ -424,7 +433,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (event.target.closest('input, textarea, select, [contenteditable="true"], [role="menu"], dialog')) return
+      if (document.querySelector('[role="dialog"]') || event.target.closest('input, textarea, select, [contenteditable="true"], [role="menu"], dialog')) return
       const key = event.key.toLowerCase()
       const mod = event.metaKey || event.ctrlKey
 
@@ -446,6 +455,8 @@ function App() {
       } else if (mod && key === 'y') {
         event.preventDefault()
         handleRedo()
+      } else if (key === 'escape') {
+        clearTimelineSelection()
       } else if (event.code === 'Space') {
         event.preventDefault()
         togglePlayback()
@@ -468,7 +479,10 @@ function App() {
         event.preventDefault()
         clearTrackContents()
       } else if (key === 'delete' || key === 'backspace' || event.code === 'Delete') {
-        if (selectedId) removeSelected(false)
+        if (selectedId || selectedClipIdsRef.current.length) {
+          event.preventDefault()
+          removeSelected(false)
+        }
       }
     }
 
@@ -630,6 +644,13 @@ function App() {
     setSelectedClipIds(ids)
   }
 
+  function clearTimelineSelection() {
+    updateSelectedClipIds([])
+    timelineSelectionAnchorRef.current = null
+    setSelectedId(null)
+    setActivePanel('素材库')
+  }
+
   function updateSelectedAssetIds(ids) {
     selectedAssetIdsRef.current = ids
     setSelectedAssetIds(ids)
@@ -637,6 +658,8 @@ function App() {
 
   function selectLibraryAsset(asset, event) {
     setAssetMenuId(null)
+    updateSelectedClipIds([])
+    timelineSelectionAnchorRef.current = null
     const current = selectedAssetIdsRef.current
     if (event.metaKey || event.ctrlKey) {
       updateSelectedAssetIds(toggleOrderedSelection(current, asset.id))
@@ -706,6 +729,8 @@ function App() {
     setProject((current) => ({ ...current, playhead: next }))
     setSelectedId((previous) => {
       if (selectedClipId !== undefined) return selectedClipId
+      const selection = selectedClipIdsRef.current
+      if (selection.length) return selection.includes(previous) ? previous : selection.at(-1)
       const clip = project.clips.find((item) => next >= item.start && next < item.start + item.duration)
       return clip?.id || previous
     })
@@ -857,9 +882,13 @@ function App() {
   }
 
   function selectClip(clip, track, event) {
-    const validSelectedClipIds = selectedClipIdsRef.current.filter((id) => project.clips.some((item) => item.id === id && !item.linkedClipId))
-    const nextSelection = toggleOrderedSelection(validSelectedClipIds, clip.id)
-    const activeClipId = nextSelection.at(-1) || null
+    const nextSelection = selectTimelineClips(project.clips, selectedClipIdsRef.current, clip.id, {
+      toggle: event.metaKey || event.ctrlKey,
+      range: event.shiftKey,
+      anchorId: timelineSelectionAnchorRef.current,
+    })
+    if (!event.shiftKey || !project.clips.some((item) => item.id === timelineSelectionAnchorRef.current && item.trackId === clip.trackId)) timelineSelectionAnchorRef.current = clip.id
+    const activeClipId = nextSelection.includes(clip.id) ? clip.id : nextSelection.at(-1) || null
     const activeClip = project.clips.find((item) => item.id === activeClipId)
     updateSelectedClipIds(nextSelection)
     setSelectedId(activeClipId)
@@ -1305,20 +1334,18 @@ function App() {
 
   function removeSelected(ripple) {
     const current = projectRef.current
-    const selectedClipId = current.clips.some((clip) => clip.id === selectedId)
-      ? selectedId
-      : selectedClipIdsRef.current.find((id) => current.clips.some((clip) => clip.id === id))
-    if (!selectedClipId) {
-      setStatus('先选择一个片段。', 'info')
+    const selectedIds = selectedClipIdsRef.current.filter((id) => current.clips.some((clip) => clip.id === id))
+    if (!selectedIds.length && current.clips.some((clip) => clip.id === selectedId)) selectedIds.push(selectedId)
+    if (!selectedIds.length) {
+      setStatus('先选择需要删除的片段。', 'info')
       return
     }
-    const target = current.clips.find((clip) => clip.id === selectedClipId)
-    const locked = current.tracks.find((track) => track.id === target.trackId)?.locked
-    if (locked) {
-      setStatus('当前轨道已锁定；请先解锁再删除片段。', 'info')
+    const lockedTracks = new Set(current.tracks.filter((track) => track.locked).map((track) => track.id))
+    if (current.clips.some((clip) => selectedIds.includes(clip.id) && lockedTracks.has(clip.trackId))) {
+      setStatus('所选片段中有锁定轨道的内容；请先解锁或取消选择后再删除。', 'info')
       return
     }
-    const nextClips = removeClip(current.clips, selectedClipId, ripple, current.tracks)
+    const nextClips = removeTimelineClips(current.clips, selectedIds, ripple, current.tracks)
     if (current.clips.length === nextClips.length) {
       setStatus('所选片段没有被删除，请重新选择后重试。', 'info')
       return
@@ -1326,13 +1353,20 @@ function App() {
     applyEdit(ripple ? '波纹删除片段' : '删除片段', (projectState) => {
       const previousDuration = Math.max(1, ...projectState.clips.map((clip) => clip.start + clip.duration))
       const nextDuration = Math.max(1, ...nextClips.map((clip) => clip.start + clip.duration))
-      const removed = projectState.clips.find((clip) => clip.id === selectedClipId)
+      const retainedIds = new Set(nextClips.map((clip) => clip.id))
+      const removed = projectState.clips.filter((clip) => !retainedIds.has(clip.id))
+      const retainedCueIds = new Set(nextClips.filter((clip) => clip.kind === 'subtitle').map((clip) => clip.sourceCueId || clip.assetId))
+      const removedCueIds = new Set(removed.filter((clip) => clip.kind === 'subtitle').map((clip) => clip.sourceCueId || clip.assetId))
       const delta = previousDuration - nextDuration
-      return { ...projectState, clips: nextClips, duration: ripple && delta > 0 && removed?.start + removed.duration >= previousDuration - .15 ? nextDuration : projectState.duration }
+      return {
+        ...projectState,
+        clips: nextClips,
+        duration: ripple && delta > 0 && removed.some((clip) => clip.start + clip.duration >= previousDuration - .15) ? nextDuration : projectState.duration,
+        subtitle: removedCueIds.size ? { ...projectState.subtitle, cues: projectState.subtitle.cues.filter((cue) => !removedCueIds.has(cue.id) || retainedCueIds.has(cue.id)) } : projectState.subtitle,
+      }
     })
-    setSelectedId(null)
-    updateSelectedClipIds([])
-    setStatus(ripple ? '片段已删除，后续片段向前闭合。' : '已删除片段。')
+    clearTimelineSelection()
+    setStatus(`已删除 ${current.clips.length - nextClips.length} 个片段${ripple ? '，后续片段向前闭合' : ''}。`)
   }
 
   function clearTrackContents(trackId = activeTrackId) {
@@ -1504,6 +1538,8 @@ function App() {
     setVolumeTarget(audioClip.volume)
     setActiveTab('edit')
     setActiveTrackId(track.id)
+    updateSelectedClipIds([audioClip.id])
+    timelineSelectionAnchorRef.current = audioClip.id
     setSelectedId(audioClip.id)
     setStatus(`已添加「${music.name}」，自动混音、循环铺设并为人声预留空间。`)
   }
@@ -1659,7 +1695,11 @@ function App() {
     setSelectedCueId(cue.id)
     setProject((current) => ({ ...current, playhead: cue.start }))
     const matchingClip = project.clips.find((clip) => clip.kind === 'subtitle' && clip.sourceCueId === cue.id)
-    if (matchingClip) setSelectedId(matchingClip.id)
+    if (matchingClip) {
+      updateSelectedClipIds([matchingClip.id])
+      timelineSelectionAnchorRef.current = matchingClip.id
+      setSelectedId(matchingClip.id)
+    }
   }
 
   function loadSubtitlesToTimeline(cues, replace = false) {
@@ -1824,35 +1864,48 @@ function App() {
 
   function handleTimelinePointerDown(event, trackId, clip, track) {
     if (event.button !== 0 || !clip || event.target.closest('.clip-action, .clip-volume, .clip-resize')) return
-    if (track.locked || clip.muted) {
-      setStatus(`「${track.label}」已锁定；请先解锁再移动片段。`, 'info')
-      return
-    }
+    if (event.metaKey || event.ctrlKey || event.shiftKey) return
+    const current = projectRef.current
+    const selectedIds = selectedClipIdsRef.current.includes(clip.id)
+      ? selectedClipIdsRef.current.filter((id) => current.clips.some((item) => item.id === id)) : [clip.id]
+    const movingIds = timelineMoveIds(current.clips, selectedIds)
+    const lockedTracks = new Set(current.tracks.filter((item) => item.locked).map((item) => item.id))
+    const blocked = current.clips.some((item) => movingIds.includes(item.id) && lockedTracks.has(item.trackId))
     event.currentTarget.setPointerCapture(event.pointerId)
-    const bounds = event.currentTarget.closest('.track-clip-lane').getBoundingClientRect()
     const pixelsPerSecond = timelineContentWidth / duration
-    dragState.current = { clipId: clip.id, trackId, boundsLeft: bounds.left, initialStart: clip.start, initialClips: project.clips.map((item) => ({ ...item })), initialProject: project, pixelsPerSecond, originX: event.clientX, lastFrame: Math.round(clip.start * 30), moved: false }
+    const fps = Number(current.frameRate.numerator) / Number(current.frameRate.denominator) || 30
+    dragState.current = { clipId: clip.id, trackId, selectedIds, movingIds, blocked, initialStart: clip.start, clipDuration: clip.duration, initialClips: current.clips, initialProject: current, pixelsPerSecond, fps, originX: event.clientX, moved: false, delta: 0 }
   }
 
   function handleTimelinePointerMove(event) {
     const state = dragState.current
     if (!state) return
     const dx = event.clientX - state.originX
-    if (Math.abs(dx) > 4) state.moved = true
+    if (Math.abs(dx) > 4 && !state.moved) {
+      state.moved = true
+      if (state.blocked) {
+        setStatus('所选片段或联动片段所在轨道已锁定；请先解锁或取消选择后再移动。', 'info')
+      } else {
+        updateSelectedClipIds(state.selectedIds)
+        setSelectedId(state.clipId)
+        setActiveTrackId(state.trackId)
+        setActivePanel('属性检查器')
+        timelineSelectionAnchorRef.current = state.clipId
+      }
+    }
     if (!state.moved) return
+    if (state.blocked) return
 
-    const frame = Math.max(0, Math.round((state.initialStart + dx / state.pixelsPerSecond) * 30))
-    const snappedSeconds = frame / 30
-    const target = project.clips.find((clip) => clip.id !== state.clipId && Math.abs(clip.start - snappedSeconds) <= 5 / 30)
-    const endTarget = project.clips.find((clip) => clip.id !== state.clipId && Math.abs(clip.start + clip.duration - (snappedSeconds + (loadClip(project.clips, state.clipId)?.duration || 0))) <= 5 / 30)
-    const targetFrame = target ? Math.round(target.start * 30) : endTarget ? Math.round((endTarget.start + endTarget.duration - (loadClip(project.clips, state.clipId)?.duration || 0)) * 30) : frame
-    const nextStart = targetFrame / 30
-    state.lastFrame = targetFrame
-
-    setProject((current) => ({
-      ...current,
-      clips: moveClipWithLinked(current.clips, state.clipId, nextStart),
-    }))
+    const snappedSeconds = Math.round((state.initialStart + dx / state.pixelsPerSecond) * state.fps) / state.fps
+    const stationary = state.initialClips.filter((clip) => !state.movingIds.includes(clip.id))
+    const target = stationary.find((clip) => Math.abs(clip.start - snappedSeconds) <= 5 / state.fps)
+    const endTarget = stationary.find((clip) => Math.abs(clip.start + clip.duration - (snappedSeconds + state.clipDuration)) <= 5 / state.fps)
+    const nextStart = target ? target.start : endTarget ? endTarget.start + endTarget.duration - state.clipDuration : snappedSeconds
+    const nextClips = moveTimelineClips(state.initialClips, state.selectedIds, nextStart - state.initialStart, state.initialProject.tracks)
+    state.delta = (nextClips.find((clip) => clip.id === state.clipId)?.start ?? state.initialStart) - state.initialStart
+    const nextProject = { ...projectRef.current, clips: nextClips, duration: Math.max(state.initialProject.duration, ...nextClips.map((clip) => clip.start + clip.duration)) }
+    projectRef.current = nextProject
+    setProject(nextProject)
   }
 
   function handleTimelinePointerUp() {
@@ -1864,12 +1917,24 @@ function App() {
       window.setTimeout(() => {
         if (suppressTimelineClickRef.current === state.clipId) suppressTimelineClickRef.current = null
       }, 0)
-      updateSelectedClipIds([state.clipId])
+      if (state.blocked || !state.delta) return
+      projectEpochRef.current += 1
+      updateSelectedClipIds(state.selectedIds)
       setSelectedId(state.clipId)
       setActiveTrackId(state.trackId)
       setEditHistory((history) => [...history.slice(-39), { label: '移动片段', project: { ...state.initialProject, clips: state.initialClips } }])
       setEditFuture([])
-      setStatus('片段已逐帧吸附移动。')
+      setStatus(state.selectedIds.length > 1 ? `已整体移动 ${state.selectedIds.length} 个片段，保留相对间距。` : '片段已逐帧吸附移动。')
+    }
+  }
+
+  function handleTimelinePointerCancel() {
+    const state = dragState.current
+    if (!state) return
+    dragState.current = null
+    if (state.moved && !state.blocked) {
+      projectRef.current = state.initialProject
+      setProject(state.initialProject)
     }
   }
 
@@ -1896,6 +1961,8 @@ function App() {
       fontSize: 52,
     }
     applyEdit('添加标题图文', (current) => ({ ...current, tracks: existing ? current.tracks : [...current.tracks, track], clips: [...current.clips, clip], duration: Math.max(current.duration, clip.start + clip.duration) }))
+    updateSelectedClipIds([clip.id])
+    timelineSelectionAnchorRef.current = clip.id
     setSelectedId(clip.id)
     setActiveTrackId(track.id)
     setStatus('已添加标题图文；可在右侧属性面板修改文字和显示时长。')
@@ -2176,8 +2243,8 @@ function App() {
   function renderTimelineClip(clip, track, trackIndex, clipIndex) {
     const left = (clip.start / duration) * timelineContentWidth
     const width = Math.max(28, (clip.duration / duration) * timelineContentWidth)
-    const selected = clip.id === selectedId || selectedClipIds.includes(clip.id)
-    const sequenceOrder = clip.linkedClipId ? -1 : selectedClipIds.indexOf(clip.id) + 1
+    const selected = selectedClipIds.length ? selectedClipIds.includes(clip.id) : clip.id === selectedId
+    const sequenceOrder = selectedClipIds.indexOf(clip.id) + 1
     const isImageClip = clip.kind === 'image' || clip.previewColor === 'green'
     const asset = project.assets.find((item) => item.id === clip.assetId)
     const isMusic = clip.kind === 'audio' && (clip.isMusic || /music|背景音乐/i.test(track.label))
@@ -2198,13 +2265,14 @@ function App() {
         onPointerDown={(event) => handleTimelinePointerDown(event, track.id, clip, track)}
         onPointerMove={handleTimelinePointerMove}
         onPointerUp={handleTimelinePointerUp}
-        onPointerCancel={handleTimelinePointerUp}
+        onPointerCancel={handleTimelinePointerCancel}
         onClick={(event) => {
+          if (event.target.closest('.clip-action, .clip-volume, .clip-resize')) return
           if (suppressTimelineClickRef.current === clip.id) {
             suppressTimelineClickRef.current = null
             return
           }
-          selectClip(clip, track)
+          selectClip(clip, track, event)
         }}
         onDoubleClick={() => {
           if (clip.kind === 'graphics') {
@@ -2214,7 +2282,8 @@ function App() {
         }}
         onContextMenu={(event) => {
           event.preventDefault()
-          updateSelectedClipIds([clip.id])
+          if (!selectedClipIdsRef.current.includes(clip.id)) updateSelectedClipIds([clip.id])
+          timelineSelectionAnchorRef.current = clip.id
           setSelectedId(clip.id)
           setActiveTrackId(track.id)
           setStatus(`${clip.name} · ${formatTime(clip.start)} · ${formatTime(clip.duration)}`, 'info')
@@ -2222,6 +2291,13 @@ function App() {
         title={`${clip.name} · ${formatTime(clip.start)} → ${formatTime(clip.start + clip.duration)}${clip.missing ? ' · 找不到原素材' : ''}`}
         role="button"
         aria-label={`片段 ${clip.name}`}
+        aria-pressed={selected}
+        onKeyDown={(event) => {
+          if (event.target === event.currentTarget && event.key === 'Enter') {
+            event.preventDefault()
+            selectClip(clip, track, event)
+          }
+        }}
         tabIndex={0}
       >
         <span className="clip-resize clip-resize-start" onPointerDown={(event) => { event.stopPropagation(); const direction = event.clientX < event.currentTarget.getBoundingClientRect().left + 12 ? -1 : 1; adjustTrim(clip, 'start', direction / 30) }} aria-hidden="true" />
@@ -2234,7 +2310,7 @@ function App() {
         {sequenceOrder > 0 ? <span className="clip-sequence-order" aria-label={`片段序号 ${sequenceOrder}`}>{sequenceOrder}</span> : null}
         <span className="clip-label"><span>{clip.name}</span>{!isImageClip && !posters.length && clip.kind !== 'subtitle' && clip.kind !== 'graphics' ? <small>{formatCompactTime(clip.duration)}</small> : null}</span>
         {clip.missing && <span className="missing-clip-badge">原素材丢失</span>}
-        {clip.kind === 'audio' && selected && !isMusic && <input aria-label="片段音量" className="clip-volume" type="range" min="0" max="1.2" step="0.01" value={clip.volume ?? 0.82} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setClipVolume(clip.id, Number(event.target.value))} />}
+        {clip.kind === 'audio' && selected && selectedClipIds.length <= 1 && !isMusic && <input aria-label="片段音量" className="clip-volume" type="range" min="0" max="1.2" step="0.01" value={clip.volume ?? 0.82} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setClipVolume(clip.id, Number(event.target.value))} />}
         {clip.kind !== 'audio' && width > 90 && <span className="clip-duration-inline" aria-hidden="true">{formatCompactTime(clip.duration)}</span>}
         {selected && <span className="clip-corner-mark" aria-hidden="true" />}
         <span className="clip-resize clip-resize-end" aria-hidden="true" />
@@ -2260,10 +2336,8 @@ function App() {
         <div className={`track-clip-lane ${track.type === 'subtitle' ? 'subtitle-lane' : ''} ${track.type === 'audio' ? 'audio-lane' : ''}`} style={{ width: `${totalWidth}px` }} onPointerDown={(event) => {
           if (event.target.closest('.timeline-clip')) return
           const position = timelineTimeFromClientX(event.clientX)
-          updateSelectedClipIds([])
-          setSelectedId(null)
-          setActivePanel('素材库')
-          setPlayhead(position)
+          clearTimelineSelection()
+          setPlayhead(position, null)
           setActiveTrackId(track.id)
         }}>
           {track.type === 'audio' && <div className="audio-lane-center" aria-hidden="true" />}
@@ -2438,7 +2512,7 @@ function App() {
   }
 
   function renderEditorToolbar() {
-    return <div className="editor-toolbar"><div className="mode-rail">{FEATURE_TABS.map(({ id, label, icon: Icon }) => <button key={id} className={`mode-button ${activeTab === id ? 'mode-active' : ''}`} onClick={() => { setActiveTab(id); setActivePanel(id === 'music' ? '音乐库' : '属性检查器') }}><Icon size={14} />{label}</button>)}</div><div className="toolbar-divider" /><button className="toolbar-tool" onClick={splitAtPlayhead}><Scissors size={13} /><span>分割</span><kbd>S</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(false)}><Trash2 size={13} /><span>删除</span><kbd>⌫</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(true)}><Unlink2 size={13} /><span>波纹</span></button><button className="toolbar-tool" onClick={toggleClipLink} disabled={!selectedClip || (selectedClip.kind !== 'video' && !selectedClip.linkedClipId && !selectedClip.audioLinked)}><Unlink2 size={13} /><span>{selectedClip?.linkedClipId || selectedClip?.audioLinked ? '解除联动' : '链接音画'}</span></button><span className="toolbar-spacer" /><button className="toolbar-tool" onClick={() => addMarkerAtPlayhead()}><Flag size={13} /><span>标记</span></button><button className="toolbar-tool" onClick={addGraphicClip}><ImagePlus size={13} /><span>添加图文</span></button><button className="toolbar-tool" onClick={() => openPicker({ preferredKind: 'audio', addToTimeline: true })}><Music2 size={13} /><span>添加音乐</span></button></div>
+    return <div className="editor-toolbar"><div className="mode-rail">{FEATURE_TABS.map(({ id, label, icon: Icon }) => <button key={id} className={`mode-button ${activeTab === id ? 'mode-active' : ''}`} onClick={() => { setActiveTab(id); setActivePanel(id === 'music' ? '音乐库' : '属性检查器') }}><Icon size={14} />{label}</button>)}</div><div className="toolbar-divider" /><button className="toolbar-tool" onClick={() => { setInspectorCollapsed(false); setShowDubbing(true) }}><Mic size={13} /><span>智能配音</span></button><button className="toolbar-tool" onClick={splitAtPlayhead}><Scissors size={13} /><span>分割</span><kbd>S</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(false)}><Trash2 size={13} /><span>删除</span><kbd>⌫</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(true)}><Unlink2 size={13} /><span>波纹</span></button><button className="toolbar-tool" onClick={toggleClipLink} disabled={!selectedClip || (selectedClip.kind !== 'video' && !selectedClip.linkedClipId && !selectedClip.audioLinked)}><Unlink2 size={13} /><span>{selectedClip?.linkedClipId || selectedClip?.audioLinked ? '解除联动' : '链接音画'}</span></button><span className="toolbar-spacer" /><button className="toolbar-tool" onClick={() => addMarkerAtPlayhead()}><Flag size={13} /><span>标记</span></button><button className="toolbar-tool" onClick={addGraphicClip}><ImagePlus size={13} /><span>添加图文</span></button><button className="toolbar-tool" onClick={() => openPicker({ preferredKind: 'audio', addToTimeline: true })}><Music2 size={13} /><span>添加音乐</span></button></div>
   }
 
   function renderVideoPanel() {
@@ -2513,7 +2587,8 @@ function App() {
           <div className="track-info timeline-track-header" onClick={() => { setActiveTrackId(track.id); setSelectedId(clips.find((clip) => clip.id === selectedId)?.id || null) }}><span className={`track-icon track-color-${track.accent}`}><TrackIcon type={track.type} /></span><div className="track-name-wrap"><span className="track-index">T{String(index + 1).padStart(2, '0')}</span><span className="track-title" title={track.label}>{track.label}</span></div><div className="track-controls"><button className="track-control" aria-label={track.muted ? '取消静音' : '静音轨道'} title={track.muted ? '取消静音' : '静音轨道'} onClick={() => toggleTrackFor(track.id, 'muted')}><VolumeX size={11} className={track.muted ? 'toggle-on' : ''} /></button><button className="track-control" aria-label={track.locked ? '解锁轨道' : '锁定轨道'} title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => toggleTrackFor(track.id, 'locked')}>{track.locked ? <LockKeyhole size={11} className="toggle-on" /> : <Circle size={11} />}</button></div></div>
           <div className={`track-clip-lane ${track.type === 'subtitle' ? 'subtitle-lane' : ''} ${track.type === 'audio' ? 'audio-lane' : ''}`} style={{ width: `${totalWidth}px` }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }} onDrop={(event) => handleDrop(event, track)} onPointerDown={(event) => {
             if (event.target.closest('.timeline-clip')) return
-            setPlayhead(timelineTimeFromClientX(event.clientX))
+            clearTimelineSelection()
+            setPlayhead(timelineTimeFromClientX(event.clientX), null)
             setActiveTrackId(track.id)
           }}>
             {track.type === 'audio' && <div className="audio-lane-center" aria-hidden="true" />}
@@ -2525,7 +2600,7 @@ function App() {
       })}
         <div className="track-add-row">{renderAddTrackButton()}<span>拖入素材 · 双击图文修改 · S 分割</span></div>
       </div><div className="timeline-playhead" style={{ left: `${project.playhead / duration * timelineContentWidth}px` }}><div className="playhead-handle"><i /></div><div className="playhead-line" /></div></div></div></div>
-      <div className="timeline-statusbar"><div className="selection-status"><span className="selection-dot" /><span>{selectedClip ? selectedClip.name : `${project.tracks.length} 条轨道 · ${project.clips.length} 个片段`}</span><i>·</i><span>{selectedClip ? `${formatTime(selectedClip.start)} → ${formatTime(selectedClip.start + selectedClip.duration)}` : `${project.clips.length} 个素材块`}</span></div><div className="zoom-controls"><button aria-label="缩小时间轴" title="缩小时间轴" onClick={() => setManualTimelineZoom((value) => Math.max(minimumZoom, value * 0.86))}><ZoomOut size={13} /></button><input type="range" min={minimumZoom} max="2.4" step="0.01" value={zoom} onChange={(event) => setManualTimelineZoom(Number(event.target.value), event.clientX)} aria-label="时间轴缩放" title="拖动以缩放时间轴" /><button aria-label="放大时间轴" title="放大时间轴" onClick={() => setManualTimelineZoom((value) => Math.min(2.4, value * 1.16))}><ZoomIn size={13} /></button><span>{fitTimeline ? '适配' : `${Math.round(zoom * 100)}%`}</span><span className="zoom-divider" /><button className="timeline-shortcut" title="⌘ 滚轮缩放 · Shift 滚轮横向移动 · Shift+Delete 清空当前轨道" aria-label="时间轴快捷键说明"><Info size={12} /></button></div></div>
+      <div className="timeline-statusbar"><div className="selection-status"><span className="selection-dot" /><span>{selectedClipIds.length > 1 ? `已选 ${selectedClipIds.length} 个片段` : selectedClip ? selectedClip.name : `${project.tracks.length} 条轨道 · ${project.clips.length} 个片段`}</span><i>·</i><span>{selectedClipIds.length > 1 ? '拖动整体移动 · Delete 批量删除' : selectedClip ? `${formatTime(selectedClip.start)} → ${formatTime(selectedClip.start + selectedClip.duration)}` : '⌘/Ctrl 点击多选 · Shift 点击范围选择'}</span></div><div className="zoom-controls"><button aria-label="缩小时间轴" title="缩小时间轴" onClick={() => setManualTimelineZoom((value) => Math.max(minimumZoom, value * 0.86))}><ZoomOut size={13} /></button><input type="range" min={minimumZoom} max="2.4" step="0.01" value={zoom} onChange={(event) => setManualTimelineZoom(Number(event.target.value), event.clientX)} aria-label="时间轴缩放" title="拖动以缩放时间轴" /><button aria-label="放大时间轴" title="放大时间轴" onClick={() => setManualTimelineZoom((value) => Math.min(2.4, value * 1.16))}><ZoomIn size={13} /></button><span>{fitTimeline ? '适配' : `${Math.round(zoom * 100)}%`}</span><span className="zoom-divider" /><button className="timeline-shortcut" title="⌘/Ctrl 点击多选 · Shift 点击同轨范围 · Esc 取消选择 · ⌘/Ctrl 滚轮缩放 · Shift 滚轮横向移动 · Shift+Delete 清空当前轨道" aria-label="时间轴快捷键说明"><Info size={12} /></button></div></div>
     </div>
   }
 
@@ -2705,6 +2780,12 @@ function App() {
       {renderTimelineMenu()}
       {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
+      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job) => {
+        const next = Array.isArray(job) ? applyDubbingResults(projectRef.current, job) : applyDubbingResult(projectRef.current, job)
+        applyEdit('中文配音入轨', () => next, assets)
+        setAssets((current) => mergeAssetLibraries(current, next.assets))
+        setStatus('中文配音与保留背景已入轨，来源范围已静音；可一次撤销。')
+      }} onClose={() => setShowDubbing(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}
       {renderSubtitleBusy()}
@@ -3177,6 +3258,7 @@ function hydrateProject(project) {
     ...defaultProject,
     ...source,
     schemaVersion: 1,
+    projectId: source.projectId || globalThis.crypto.randomUUID(),
     frameSize: source.frameSize || defaultProject.frameSize,
     frameRate: source.frameRate || defaultProject.frameRate,
     exportSettings: { ...defaultProject.exportSettings, ...(source.exportSettings || {}) },

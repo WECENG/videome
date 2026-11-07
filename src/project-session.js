@@ -3,7 +3,7 @@ import { defaultProject } from './domain.js'
 export const isExampleProject = (project) => Boolean(project?.clips?.length) && project.clips.every((clip) => String(clip.id).startsWith('sample-'))
 
 export function createBlankProject(name = defaultProject.name, assets = []) {
-  return { ...structuredClone(defaultProject), name: String(name).trim() || defaultProject.name, assets: structuredClone(assets) }
+  return { ...structuredClone(defaultProject), projectId: globalThis.crypto.randomUUID(), name: String(name).trim() || defaultProject.name, assets: structuredClone(assets) }
 }
 
 export function readProjectSession(storage) {

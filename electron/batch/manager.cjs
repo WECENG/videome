@@ -18,7 +18,7 @@ class BackgroundLane {
   constructor(gate) { this.gate = gate; this.tail = Promise.resolve(); this.stopping = false }
   run(operation) {
     const next = this.tail.catch(() => {}).then(async () => {
-      while (this.gate.owner?.startsWith('batch:') && !this.stopping) await new Promise((resolve) => setTimeout(resolve, 250))
+      while ((this.gate.owner?.startsWith('batch:') || this.gate.owner === 'dubbing') && !this.stopping) await new Promise((resolve) => setTimeout(resolve, 250))
       if (this.stopping) throw new Error('应用正在退出。')
       return operation()
     })

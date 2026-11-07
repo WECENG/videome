@@ -57,6 +57,10 @@
         "to": "fonts"
       },
       {
+        "from": "resources/dubbing",
+        "to": "dubbing"
+      },
+      {
         "from": "resources/THIRD-PARTY-NOTICES.txt",
         "to": "THIRD-PARTY-NOTICES.txt"
       }

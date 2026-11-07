@@ -1,0 +1,13 @@
+{
+  "version": "en-zh-v1",
+  "platform": "darwin-arm64",
+  "minimumFreeBytes": 10000000000,
+  "assets": [
+    { "id": "python", "name": "应用私有 Python 3.11.13", "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20250818/cpython-3.11.13%2B20250818-aarch64-apple-darwin-install_only_stripped.tar.gz", "sha256": "e6015b4a1e74d1bcc70f6117ca22d5c5c778b393e4b9d6fef1000fc3f016b6bc", "size": 18032937, "archive": "tar" },
+    { "id": "llama", "name": "llama.cpp b5401 · Metal", "url": "https://github.com/ggml-org/llama.cpp/releases/download/b5401/llama-b5401-bin-macos-arm64.zip", "sha256": "3d0ecc89d7c3adb7c1da164e228c3ed5efde69284e930823e058cb23b021df0e", "size": 10647852, "archive": "zip" },
+    { "id": "mrx", "name": "MERL MRX · 默认权重", "url": "https://media.githubusercontent.com/media/merlresearch/cocktail-fork-separation/19b3de827ebc4bfb014570cf92dd32b4ee3b6921/checkpoints/default_mrx_pre_trained_weights.pth", "sha256": "9cecc071c9e58afda34d1a98609a1540f61320e718bafecc4c9c1c5e3ed20a0c", "size": 122317463, "file": "mrx.pth" },
+    { "id": "whisper", "name": "Whisper small.en", "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin", "sha256": "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d", "size": 487614201, "file": "small.en.bin" },
+    { "id": "qwen", "name": "Qwen3-4B Q4_K_M", "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf", "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5", "size": 2497280256, "file": "qwen3-4b.gguf" },
+    { "id": "kokoro", "name": "Kokoro v1.1-zh · 103 音色", "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2", "sha256": "b78e1ac42b852e839cceaafbe88f66806bf5860992d1d7b9a3f2ad1198427aed", "size": 364855331, "archive": "tar" }
+  ]
+}

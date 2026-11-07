@@ -32,6 +32,28 @@ contextBridge.exposeInMainWorld('videome', {
   exportMedia: (payload) => ipcRenderer.invoke('videome:export', payload),
   cancelExport: () => ipcRenderer.invoke('videome:cancel-export'),
   openPreview: (asset) => ipcRenderer.invoke('videome:open-preview', asset),
+  dubbingModels: () => ipcRenderer.invoke('videome:dubbing-models'),
+  dubbingNetworkSettings: () => ipcRenderer.invoke('videome:dubbing-network'),
+  saveDubbingNetworkSettings: (settings) => ipcRenderer.invoke('videome:dubbing-save-network', settings),
+  testDubbingNetwork: () => ipcRenderer.invoke('videome:dubbing-test-network'),
+  installDubbingModels: () => ipcRenderer.invoke('videome:dubbing-install'),
+  cancelDubbingInstall: () => ipcRenderer.invoke('videome:dubbing-cancel-install'),
+  listDubbingJobs: (projectId) => ipcRenderer.invoke('videome:dubbing-list', projectId),
+  getDubbingJob: (id) => ipcRenderer.invoke('videome:dubbing-get', id),
+  removeDubbingJob: (payload) => ipcRenderer.invoke('videome:dubbing-remove', payload),
+  clearDubbingJobs: (projectId) => ipcRenderer.invoke('videome:dubbing-clear', projectId),
+  createDubbingJob: (payload) => ipcRenderer.invoke('videome:dubbing-create', payload),
+  updateDubbingJob: (payload) => ipcRenderer.invoke('videome:dubbing-update', payload),
+  startDubbingJob: (payload) => ipcRenderer.invoke('videome:dubbing-start', payload),
+  cancelDubbingJob: (id) => ipcRenderer.invoke('videome:dubbing-cancel', id),
+  dubbingTtsSettings: () => ipcRenderer.invoke('videome:dubbing-tts-settings'),
+  saveDubbingTtsSettings: (settings) => ipcRenderer.invoke('videome:dubbing-save-tts-settings', settings),
+  testDubbingTtsSettings: (settings) => ipcRenderer.invoke('videome:dubbing-test-tts-settings', settings),
+  onDubbingProgress(callback) {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('videome:dubbing-progress', handler)
+    return () => ipcRenderer.removeListener('videome:dubbing-progress', handler)
+  },
   pickBatchOutputDirectory: () => ipcRenderer.invoke('videome:batch-pick-directory'),
   createBatchMixAnalysis: (payload) => ipcRenderer.invoke('videome:batch-analyze', payload),
   getBatchMixJob: (id) => ipcRenderer.invoke('videome:batch-get', id),

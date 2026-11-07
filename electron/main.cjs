@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, protocol, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, protocol, shell, safeStorage } = require('electron')
 const { spawn } = require('node:child_process')
 const crypto = require('node:crypto')
 const fs = require('node:fs/promises')
@@ -12,6 +12,10 @@ const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manag
 const { registerBatchMixIpc } = require('./batch/ipc.cjs')
 const { locateTool, fontResources, encoderFor, hardwareFailure, filterPath } = require('./runtime.cjs')
 const { stopChild } = require('./processes.cjs')
+const { DubbingModels } = require('./dubbing/models.cjs')
+const { DubbingManager } = require('./dubbing/manager.cjs')
+const { registerDubbingIpc } = require('./dubbing/ipc.cjs')
+const { TtsNetworkSettings } = require('./dubbing/tts-network.cjs')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
 const projectFilter = [{ name: 'Videome 工程', extensions: ['videome'] }]
@@ -35,6 +39,25 @@ const batchManager = app.whenReady().then(async () => {
   return service
 })
 registerBatchMixIpc({ ipcMain, app, dialog, shell, manager: batchManager, authorize: authorizeExistingMedia, openProjectPath })
+const dubbingResources = app.isPackaged ? path.join(process.resourcesPath, 'dubbing') : path.join(__dirname, '..', 'resources', 'dubbing')
+const broadcastDubbing = (payload) => {
+  for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:dubbing-progress', payload)
+}
+const dubbingModels = app.whenReady().then(() => {
+  const models = new DubbingModels({ root: path.join(app.getPath('userData'), 'dubbing-models'), resources: dubbingResources, secureStorage: safeStorage })
+  models.ttsNetwork = new TtsNetworkSettings(path.join(app.getPath('userData'), 'dubbing-assets'), safeStorage)
+  models.on('progress', (state) => broadcastDubbing({ models: state }))
+  return models
+})
+const dubbingManager = app.whenReady().then(async () => {
+  const [models, ffmpeg, ffprobe] = await Promise.all([dubbingModels, locateBinary('ffmpeg'), locateBinary('ffprobe')])
+  const service = new DubbingManager({ root: path.join(app.getPath('userData'), 'dubbing-assets'), models, ffmpeg, ffprobe, resources: dubbingResources, gate: exportGate })
+  await service.initialized
+  service.on('progress', (job) => broadcastDubbing({ job }))
+  service.on('removed', (removed) => broadcastDubbing({ removed }))
+  return service
+})
+registerDubbingIpc({ ipcMain, service: dubbingManager, models: dubbingModels, authorize: authorizeExistingMedia })
 let pendingProjectPath = process.argv.find((argument) => argument.toLowerCase().endsWith('.videome')) || null
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -965,7 +988,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   backgroundLane.stopping = true
   for (const job of activeJobs) { job.videomeCancelled = true; stopChild(job) }
-  void batchManager.then((service) => service.shutdown()).finally(() => { finishedShutdown = true; app.quit() })
+  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
 })
 
 app.on('window-all-closed', () => {
