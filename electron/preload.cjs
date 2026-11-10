@@ -49,6 +49,16 @@ contextBridge.exposeInMainWorld('videome', {
   dubbingTtsSettings: () => ipcRenderer.invoke('videome:dubbing-tts-settings'),
   saveDubbingTtsSettings: (settings) => ipcRenderer.invoke('videome:dubbing-save-tts-settings', settings),
   testDubbingTtsSettings: (settings) => ipcRenderer.invoke('videome:dubbing-test-tts-settings', settings),
+  whisperStatus: () => ipcRenderer.invoke('videome:dubbing-whisper-status'),
+  installWhisper: () => ipcRenderer.invoke('videome:dubbing-whisper-install'),
+  cancelWhisperInstall: () => ipcRenderer.invoke('videome:dubbing-whisper-cancel-install'),
+  recognizeWhisper: (source) => ipcRenderer.invoke('videome:dubbing-whisper-recognize', { source }),
+  cancelWhisperRecognition: () => ipcRenderer.invoke('videome:dubbing-whisper-cancel-recognition'),
+  onWhisperProgress(callback) {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('videome:whisper-progress', handler)
+    return () => ipcRenderer.removeListener('videome:whisper-progress', handler)
+  },
   onDubbingProgress(callback) {
     const handler = (_event, payload) => callback(payload)
     ipcRenderer.on('videome:dubbing-progress', handler)

@@ -15,6 +15,7 @@ const { stopChild } = require('./processes.cjs')
 const { DubbingModels } = require('./dubbing/models.cjs')
 const { DubbingManager } = require('./dubbing/manager.cjs')
 const { registerDubbingIpc } = require('./dubbing/ipc.cjs')
+const { WhisperManager } = require('./dubbing/whisper.cjs')
 const { TtsNetworkSettings } = require('./dubbing/tts-network.cjs')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
@@ -49,6 +50,16 @@ const dubbingModels = app.whenReady().then(() => {
   models.on('progress', (state) => broadcastDubbing({ models: state }))
   return models
 })
+const whisperManager = app.whenReady().then(async () => {
+  const [models, ffmpeg] = await Promise.all([dubbingModels, locateBinary('ffmpeg')])
+  const whisper = new WhisperManager({ root: models.root, resources: dubbingResources, models, ffmpeg, gate: exportGate,
+    onGateReleased: () => { void batchManager.then((service) => service.pump()) },
+  })
+  whisper.on('progress', (state) => {
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:whisper-progress', state)
+  })
+  return whisper
+})
 const dubbingManager = app.whenReady().then(async () => {
   const [models, ffmpeg, ffprobe] = await Promise.all([dubbingModels, locateBinary('ffmpeg'), locateBinary('ffprobe')])
   const service = new DubbingManager({ root: path.join(app.getPath('userData'), 'dubbing-assets'), models, ffmpeg, ffprobe, resources: dubbingResources, gate: exportGate })
@@ -57,7 +68,13 @@ const dubbingManager = app.whenReady().then(async () => {
   service.on('removed', (removed) => broadcastDubbing({ removed }))
   return service
 })
-registerDubbingIpc({ ipcMain, service: dubbingManager, models: dubbingModels, authorize: authorizeExistingMedia })
+registerDubbingIpc({ ipcMain, service: dubbingManager, models: dubbingModels, whisper: whisperManager, authorize: authorizeExistingMedia, hasAudioTrack: async (mediaPath) => {
+  const ffprobe = await locateBinary('ffprobe')
+  if (!ffprobe) throw new Error('字幕识别需要 ffprobe。')
+  const metadata = await probeMedia(mediaPath, ffprobe)
+  if (!metadata.streams.some((stream) => stream.codec_type === 'audio')) throw new Error('所选素材没有可读取的音轨。')
+  return true
+} })
 let pendingProjectPath = process.argv.find((argument) => argument.toLowerCase().endsWith('.videome')) || null
 const singleInstanceLock = app.requestSingleInstanceLock()
 if (!singleInstanceLock) {
@@ -988,7 +1005,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   backgroundLane.stopping = true
   for (const job of activeJobs) { job.videomeCancelled = true; stopChild(job) }
-  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
+  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown()), whisperManager.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
 })
 
 app.on('window-all-closed', () => {

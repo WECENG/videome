@@ -40,12 +40,23 @@ def separate(args):
 
 def transcribe(args):
     from pywhispercpp.model import Model
-    model = Model(str(args.models / "small.en.bin"), n_threads=4, print_realtime=False, print_progress=False)
-    segments = model.transcribe(str(args.input), language="en", translate=False, no_context=True,
+    model_path = args.model or str(args.models / "small.en.bin")
+    model = Model(model_path, n_threads=4, print_realtime=False, print_progress=False)
+    segments = []
+
+    def report_segment(segment):
+        segments.append(segment)
+        if args.multilingual and args.duration > 0:
+            value = min(99, max(0, segment.t1 / 100 / args.duration * 100))
+            print(json.dumps({"progress": value}), flush=True)
+
+    segments = model.transcribe(str(args.input), language="" if args.multilingual else "en", detect_language=args.multilingual,
+                                new_segment_callback=report_segment, translate=False, no_context=True,
                                 suppress_blank=True, max_len=160, split_on_word=True, temperature=0.0)
     result = [{"id": f"cue-{i}", "start": s.t0 / 100, "end": s.t1 / 100, "text": s.text.strip(), "translation": "", "status": "draft"}
               for i, s in enumerate(segments) if s.text.strip() and s.t1 > s.t0]
     (args.output / "transcript.json").write_text(json.dumps(result, ensure_ascii=False))
+    print(json.dumps({"progress": 100}), flush=True)
 
 
 def tts(args):
@@ -84,6 +95,9 @@ parser.add_argument("--models", type=Path, required=True)
 parser.add_argument("--input", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--voice", type=int, default=3)
+parser.add_argument("--model", type=str, default="")
+parser.add_argument("--multilingual", action="store_true")
+parser.add_argument("--duration", type=float, default=0)
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
 globals()[args.stage](args)

@@ -107,4 +107,9 @@ describe('dubbing installation proxy', () => {
     model.installing = Promise.resolve()
     await expect(model.saveNetworkSettings({ mode: 'direct' })).rejects.toThrow('先取消安装')
   })
+  it('blocks network setting changes during the independent Whisper install', async () => {
+    const model = new DubbingModels({ root: await workspace(), resources: path.resolve('resources/dubbing') })
+    model.whisperInstalling = true
+    await expect(model.saveNetworkSettings({ mode: 'direct' })).rejects.toThrow('先取消安装')
+  })
 })

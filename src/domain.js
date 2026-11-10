@@ -49,7 +49,7 @@ export const sampleProject = {
     { id: 'sample-2', trackId: 'video-main', assetId: 'sample-footage-2', name: '棕榈树影 · 片段 04', start: 32.2, duration: 21, trimStart: 0, trimEnd: 21, sourceDuration: 21, color: 'lime', kind: 'video', hasAudio: true, previewColor: 'palms' },
     { id: 'sample-3', trackId: 'video-main', assetId: 'sample-footage-3', name: '沿岸漫步 · 手持', start: 57, duration: 41, trimStart: 0, trimEnd: 41, sourceDuration: 41, color: 'lime', kind: 'video', hasAudio: true, previewColor: 'shore' },
     { id: 'sample-4', trackId: 'video-main', assetId: 'sample-footage-4', name: '落日水色 · 慢动作', start: 100, duration: 26, trimStart: 0, trimEnd: 26, sourceDuration: 26, color: 'lime', kind: 'video', hasAudio: true, previewColor: 'sunset' },
-    { id: 'sample-5', trackId: 'video-overlay', assetId: 'sample-inset', name: '细节镜头 · 叠画', start: 73, duration: 12, trimStart: 0, trimEnd: 12, sourceDuration: 12, color: 'rose', kind: 'video', hasAudio: false, x: 0.28, y: -0.18, scale: 0.35, hasAudio: true, previewColor: 'boardwalk' },
+    { id: 'sample-5', trackId: 'video-overlay', assetId: 'sample-inset', name: '细节镜头 · 叠画', start: 73, duration: 12, trimStart: 0, trimEnd: 12, sourceDuration: 12, color: 'rose', kind: 'video', hasAudio: false, x: 0.28, y: -0.18, scale: 0.35, previewColor: 'boardwalk' },
     { id: 'sample-6', trackId: 'title', assetId: 'sample-title', name: 'SUMMER · 夏日序曲', start: 4, duration: 6.8, color: 'amber', kind: 'graphics', previewColor: 'orange' },
     { id: 'sample-7', trackId: 'title', assetId: 'sample-location', name: '海岸慢游 · 2026', start: 57, duration: 5.8, color: 'amber', kind: 'graphics', previewColor: 'green' },
     { id: 'sample-8', trackId: 'subtitles', assetId: 'caption-1', name: '沿着海岸，寻找夏天的颜色。', start: 46, duration: 4.9, color: 'violet', kind: 'subtitle' },
@@ -414,6 +414,11 @@ export const createMediaClips = ({ assets, track, clips, playhead, duration, tra
 
   const timelineEnd = Math.max(duration, ...nextClips.map((clip) => clip.start + clip.duration))
   return { clips: [...clips, ...nextClips], tracks: nextTracks, duration: timelineEnd, inserted: nextClips.filter((clip) => !clip.linkedClipId) }
+}
+
+export function createSubtitleTrack(tracks, id = `subtitle-${globalThis.crypto?.randomUUID?.() || Date.now()}`) {
+  const count = tracks.filter((track) => track.type === 'subtitle').length + 1
+  return { id, type: 'subtitle', label: count === 1 ? '字幕' : `字幕 ${count}`, accent: 'violet', order: tracks.length, locked: false, muted: false }
 }
 
 function makeTrack(tracks, type) {

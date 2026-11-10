@@ -120,7 +120,7 @@ class DubbingModels extends EventEmitter {
   notify(patch) { Object.assign(this.state, patch); this.emit('progress', { ...this.state }) }
   async networkSettings() { return this.network.publicSettings() }
   async saveNetworkSettings(settings) {
-    if (this.installing) throw new Error('请先取消安装，等待停止后再修改代理。')
+    if (this.installing || this.whisperInstalling || this.whisperRecognizing) throw new Error('请先取消安装并等待停止后再修改代理。')
     return this.network.save(settings)
   }
   async testNetwork() {
@@ -141,6 +141,8 @@ class DubbingModels extends EventEmitter {
   }
   install() {
     if (this.installing) return this.installing
+    if (this.whisperInstalling) throw new Error('多语言 Whisper 正在安装，请完成后再安装智能配音模型。')
+    if (this.whisperRecognizing) throw new Error('字幕识别正在运行，请完成后再安装智能配音模型。')
     this.controller = new AbortController()
     this.installing = this.performInstall(this.controller.signal).catch(async (error) => {
       const settings = await this.network.read().catch(() => DEFAULT_SETTINGS)
@@ -175,6 +177,7 @@ class DubbingModels extends EventEmitter {
       }
     }
     this.notify({ stage: '安装已锁定的推理依赖', loaded: totalBytes, total: totalBytes, downloadedBytes: totalBytes, totalBytes, indeterminate: true })
+    await this.whisperManager?.shutdown()
     await run(this.python, ['-m', 'pip', 'install', '--disable-pip-version-check', '--require-hashes', '--only-binary=:all:',
       ...(network.mode === 'direct' ? ['--proxy', ''] : []), '-r', path.join(this.resources, 'requirements.lock')],
     { signal, timeout: 30 * 60_000, env: proxyEnvironment(network), inheritEnv: false })

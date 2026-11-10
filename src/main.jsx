@@ -71,6 +71,7 @@ import {
   audioPreviewUrl,
   calculateWaveform,
   createMediaClips,
+  createSubtitleTrack,
   createSrt,
   defaultProject,
   exportEstimate,
@@ -105,6 +106,7 @@ import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
 import DubbingPanel from './DubbingPanel.jsx'
 import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState } from './dubbing-domain.js'
+import { createWhisperSubtitleEdit, resolveWhisperSelectionClips, timelineWhisperSourceRange } from './subtitle-domain.js'
 import { moveTimelineClips, removeTimelineClips, selectTimelineClips, timelineMoveIds } from './timeline-selection.js'
 import { DeleteTrackDialog, TimelineTrackMenu } from './TimelineTrackMenu.jsx'
 import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
@@ -186,6 +188,10 @@ function App() {
   const [subtitleGenerated, setSubtitleGenerated] = useState(false)
   const [relinkQueue, setRelinkQueue] = useState([])
   const [subtitleBusy, setSubtitleBusy] = useState(false)
+  const [whisperStatus, setWhisperStatus] = useState({ supported: false, ready: false, installing: false, recognizing: false, stage: '', error: null, totalBytes: 0, downloadedBytes: 0, recognitionProgress: 0 })
+  const [mergeWhisperSubtitles, setMergeWhisperSubtitles] = useState(() => {
+    try { return localStorage.getItem('videome-whisper-subtitle-preferences') !== 'replace' } catch { return true }
+  })
   const [showExport, setShowExport] = useState(false)
   const [showBatchMix, setShowBatchMix] = useState(false)
   const [showDubbing, setShowDubbing] = useState(false)
@@ -287,6 +293,10 @@ function App() {
   const selectedAsset = useMemo(() => project.assets.find((asset) => asset.id === selectedClip?.assetId) || null, [project.assets, selectedClip])
   const activeTrack = useMemo(() => project.tracks.find((track) => track.id === activeTrackId) || project.tracks.find((track) => track.type === 'video') || project.tracks[0], [project.tracks, activeTrackId])
   const selectedSubtitle = useMemo(() => safeSubtitle.cues.find((cue) => project.playhead >= cue.start && project.playhead <= cue.end), [safeSubtitle.cues, project.playhead])
+  const selectedSubtitleClips = useMemo(() => {
+    const ids = selectedClipIds.length ? selectedClipIds : selectedId ? [selectedId] : []
+    return resolveWhisperSelectionClips(project.clips, ids)
+  }, [project.clips, selectedClipIds, selectedId])
   const exampleMode = isExampleProject(project)
   const filteredAssets = assets.filter((asset) => `${asset.name} ${asset.kind} ${asset.codec || ''}`.toLowerCase().includes(search.toLowerCase()))
     const suggestions = generateSuggestions(musicFiles, { mood, tempo, duration })
@@ -383,6 +393,8 @@ function App() {
     const dispose = window.videome?.onExportProgress
       ? window.videome.onExportProgress((nextProgress) => setProgress(nextProgress))
       : null
+    const disposeWhisper = window.videome?.onWhisperProgress?.((state) => setWhisperStatus((current) => ({ ...current, ...state })))
+    if (window.videome?.whisperStatus) void window.videome.whisperStatus().then((result) => { if (mounted && result?.ok) setWhisperStatus((current) => ({ ...current, ...result.value })) }).catch(() => {})
     let alive = true
     const reader = async () => {
       while (alive) {
@@ -396,6 +408,7 @@ function App() {
       mounted = false
       alive = false
       dispose?.()
+      disposeWhisper?.()
     }
   }, [])
 
@@ -906,9 +919,8 @@ function App() {
 
   function addSubtitleClip(cue) {
     const subtitleTrack = (activeTrack?.type === 'subtitle' && !activeTrack.locked ? activeTrack : null)
-      || project.tracks.find((track) => track.type === 'subtitle' && !track.locked)
-      || project.tracks.find((track) => track.type === 'graphics' && !track.locked)
-    const targetTrack = subtitleTrack || { id: 'subtitles', type: 'subtitle', label: '字幕', accent: 'violet', locked: false, muted: false }
+      || project.tracks.find((track) => track.type === 'subtitle' && !track.locked && !track.muted)
+    const targetTrack = subtitleTrack || createSubtitleTrack(project.tracks)
     if (!subtitleTrack) {
       setProject((current) => ({ ...current, tracks: [...current.tracks, targetTrack] }))
     }
@@ -1770,32 +1782,99 @@ function App() {
     }, 500)
   }
 
-  async function recognizeSpeech() {
-    if (project.subtitle.cues.some((cue) => cue.edited)) {
-      const accepted = window.confirm('已有字幕包含手动修改。新识别结果将单独保存为草稿，不会覆盖现有内容。继续识别？')
-      if (!accepted) return
+  function subtitleSourcesFromSelection() {
+    let ids = selectedClipIdsRef.current.length ? [...selectedClipIdsRef.current] : selectedId ? [selectedId] : []
+    if (!ids.some((id) => projectRef.current.clips.some((clip) => clip.id === id))) ids = []
+    if (!ids.length) {
+      const containing = projectRef.current.clips.find((clip) => ['video', 'audio'].includes(clip.kind) && project.playhead >= clip.start && project.playhead < clip.start + clip.duration)
+      if (containing) ids = [containing.id]
     }
-    if (!selectedAsset?.path && !project.assets.length) {
-      setStatus('请先导入一段包含人声的视频，再开始语音识别。', 'info')
-      await openPicker({ addToTimeline: true })
-      return
-    }
-    if (!window.videome?.probeMedia) {
-      setStatus('本地语音识别需要桌面版与 whisper.cpp 模型；当前尚未安装识别服务。', 'info')
-      return
-    }
+    const clips = resolveWhisperSelectionClips(projectRef.current.clips, ids)
+    if (!clips.length) throw new Error('请先选中音频或视频片段；未选片段时会识别播放指针所在片段。')
+    if (clips.length > 20) throw new Error('一次最多识别 20 个音频或视频片段。')
+    return clips.map((selected) => {
+      let sourceClip = selected
+      if (selected.kind === 'video') sourceClip = projectRef.current.clips.find((clip) => clip.kind === 'audio' && clip.linkedClipId === selected.id) || selected
+      const track = projectRef.current.tracks.find((item) => item.id === sourceClip.trackId)
+      const asset = projectRef.current.assets.find((item) => item.id === sourceClip.assetId)
+      if (!asset?.path || asset.missing) throw new Error(`「${sourceClip.name || '片段'}」的本地媒体文件不可用，请重新关联源素材。`)
+      const muteForClip = (clip) => Boolean(clip.muted || projectRef.current.tracks.find((item) => item.id === clip.trackId)?.muted || Number(clip.volume ?? 0.82) <= 0)
+      if (muteForClip(sourceClip) || selected.kind === 'video' && selected === sourceClip && selected.suppressEmbeddedAudio) {
+        throw new Error(`「${sourceClip.name || '片段'}」已静音或音量为零，请先取消静音并调高音量。`)
+      }
+      if (!(sourceClip.duration > 0) || sourceClip.duration > 1800) throw new Error('单个片段识别时长需要在 30 分钟以内。')
+      const range = timelineWhisperSourceRange(sourceClip, selected.kind === 'video' && selected !== sourceClip ? selected : null, projectRef.current.playhead)
+      const signature = JSON.stringify({ id: sourceClip.id, assetId: sourceClip.assetId, start: sourceClip.start, duration: sourceClip.duration, trimStart: sourceClip.trimStart,
+        muted: sourceClip.muted, volume: sourceClip.volume, trackId: sourceClip.trackId, trackMuted: track?.muted,
+        visual: selected.kind === 'video' && selected !== sourceClip ? { id: selected.id, start: selected.start, duration: selected.duration, trimStart: selected.trimStart, trackId: selected.trackId } : null })
+      return { clipId: sourceClip.id, selectedClipId: selected.id, assetId: asset.id, path: asset.path, clipName: sourceClip.name || selected.name || '片段',
+        ...range, clipSignature: signature }
+    }).sort((first, second) => first.start - second.start)
+  }
 
-    const candidate = selectedAsset?.kind === 'video' && selectedAsset.audioCodec ? selectedAsset : project.assets.find((asset) => asset.kind === 'video' && asset.audioCodec)
-    if (!candidate) {
-      setStatus('所选项目中没有可读取的音轨。', 'error')
-      return
+  async function installWhisper() {
+    if (!window.videome?.installWhisper) { setStatus('当前桌面版本不支持字幕模型安装，请重启应用。', 'error'); return }
+    setWhisperStatus((current) => ({ ...current, installing: true, error: null, stage: '准备安装多语言 Whisper' }))
+    try {
+      const result = await window.videome.installWhisper()
+      if (!result?.ok) throw new Error(result?.reason || 'Whisper 安装失败。')
+      setWhisperStatus((current) => ({ ...current, ...result.value }))
+      if (result.value?.error) throw new Error(result.value.error)
+    } catch (error) {
+      const cancelled = error.message?.includes('取消')
+      setWhisperStatus((current) => ({ ...current, installing: false, error: cancelled ? null : error.message || 'Whisper 安装失败。', stage: cancelled ? '安装已取消' : '安装失败' }))
+      setStatus(cancelled ? 'Whisper 安装已取消。' : error.message || 'Whisper 安装失败。', cancelled ? 'info' : 'error')
     }
+  }
+
+  async function cancelWhisperInstall() {
+    await window.videome?.cancelWhisperInstall?.()
+  }
+
+  async function recognizeSpeech() {
+    if (subtitleBusy || whisperStatus.installing || whisperStatus.recognizing) return
+    if (!whisperStatus.ready) { setStatus('请先在字幕面板安装多语言 Whisper。', 'info'); return }
+    const mergeExistingCaptions = mergeWhisperSubtitles
+    let sources
+    try { sources = subtitleSourcesFromSelection() } catch (error) { setStatus(error.message, 'info'); return }
     setSubtitleBusy(true)
-    setStatus('正在检查本机是否已配置 Whisper 本地模型。', 'info')
-    window.setTimeout(() => {
-      setSubtitleBusy(false)
-      setStatus('媒体与音轨已确认。本机尚未安装 whisper.cpp 或语音模型，因此未伪造识别字幕；现有字幕和工程未改动。', 'info')
-    }, 700)
+    setWhisperStatus((current) => ({ ...current, recognizing: true, error: null, stage: `准备识别 ${sources.length} 个片段`, recognitionProgress: 0 }))
+    setStatus(`正在本机识别 ${sources.length} 个片段，音频不会上传。`, 'info')
+    try {
+      const allCues = []
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index]
+        setWhisperStatus((current) => ({ ...current, recognizing: true, stage: `识别片段 ${index + 1} / ${sources.length} · ${source.clipName}`, recognitionProgress: 0 }))
+        const result = await window.videome.recognizeWhisper({ path: source.path, trimStart: source.trimStart, duration: source.duration })
+        if (!result?.ok) throw new Error(`${source.clipName}：${result?.reason || '字幕识别失败。'}`)
+        if (!Array.isArray(result.value) || !result.value.length) throw new Error(`「${source.clipName}」中没有识别到有效语音。`)
+        const current = projectRef.current
+        const liveClip = current.clips.find((clip) => clip.id === source.clipId)
+        const liveAsset = current.assets.find((asset) => asset.id === source.assetId)
+      const liveSelectedClip = current.clips.find((clip) => clip.id === source.selectedClipId)
+        const liveTrack = current.tracks.find((track) => track.id === liveClip?.trackId)
+      const selectedTrack = current.tracks.find((track) => track.id === liveSelectedClip?.trackId)
+        const currentClip = liveClip && timelineWhisperSourceRange(liveClip)
+      const selectedMuted = source.selectedClipId === source.clipId && liveSelectedClip
+        && (liveSelectedClip.muted || selectedTrack?.muted || Number(liveSelectedClip.volume ?? 0.82) <= 0)
+        const currentSignature = liveClip && JSON.stringify({ id: liveClip.id, assetId: liveClip.assetId, start: liveClip.start, duration: liveClip.duration, trimStart: liveClip.trimStart,
+          muted: liveClip.muted, volume: liveClip.volume, trackId: liveClip.trackId, trackMuted: liveTrack?.muted,
+          visual: source.selectedClipId !== source.clipId ? (() => { const visual = current.clips.find((clip) => clip.id === source.selectedClipId); return visual ? { id: visual.id, start: visual.start, duration: visual.duration, trimStart: visual.trimStart, trackId: visual.trackId } : null })() : null })
+      if (!liveClip || !liveSelectedClip || selectedMuted || liveAsset?.path !== source.path || currentSignature !== source.clipSignature || !currentClip || currentClip.trimStart !== source.trimStart || currentClip.duration !== source.duration || currentClip.timelineStart !== source.start) throw new Error(`识别期间「${source.clipName}」已变化，请重新选择并识别。`)
+        allCues.push(...result.value.map((cue) => ({ ...cue, sourceDuration: source.duration, timelineStart: source.start })))
+      }
+      const prefix = `whisper-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
+      const committed = createWhisperSubtitleEdit(projectRef.current, allCues, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: prefix, merge: mergeExistingCaptions })
+      applyEdit('识别语音并添加字幕', (projectState) => createWhisperSubtitleEdit(projectState, allCues, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: prefix, merge: mergeExistingCaptions }).project)
+      setSubtitleGenerated(true)
+      setSelectedCueId(committed.cues[0].id)
+      setWhisperStatus((state) => ({ ...state, recognizing: false, error: null, stage: '识别完成', recognitionProgress: 100 }))
+      setStatus(`已识别 ${sources.length} 个片段，共 ${committed.cues.length} 条原语字幕，并添加到时间线；可编辑、导出或撤销。`)
+    } catch (error) {
+      const cancelled = error.message?.includes('取消')
+      setWhisperStatus((current) => ({ ...current, recognizing: false, error: cancelled ? null : error.message || '字幕识别失败。' }))
+      setStatus(cancelled ? '字幕识别已取消。' : error.message || '字幕识别失败。', cancelled ? 'info' : 'error')
+    } finally { setSubtitleBusy(false) }
   }
 
   async function markGoodOutPoint() {
@@ -2717,7 +2796,146 @@ function App() {
   }
 
   function renderSubtitleInspector() {
-    return <div className="inspector-scroll"><div className="inspector-section subtitle-status-card"><div className="section-kicker"><span>01 / TRANSCRIBE</span><span className={`local-model-pill ${tools.find((item) => item.name === 'melt')?.version ? 'connected' : ''}`}><span />{subtitleBusy ? 'CHECKING MODEL' : 'OFFLINE'}</span></div><div className="asr-title"><div className="asr-orbit"><Mic size={17} /><span>AI</span></div><div><h3>对白变字幕</h3><small>{subtitleGenerated ? '当前显示字幕草稿' : 'Whisper · 本地模型尚未安装'}</small></div></div><button className="generate-subtitles" disabled={subtitleBusy || !window.videome?.probeMedia} title={!window.videome?.probeMedia ? '桌面版将连接本地媒体处理服务' : ''} onClick={recognizeSpeech}><Sparkles size={14} />{subtitleBusy ? '正在检查本地语音模型…' : '检查本地语音识别'}</button><div className="subtitles-note"><LockKeyhole size={11} /><span>离线处理 · 原始音频不会上传</span><button title="本地 Whisper 组件尚未安装；自动识别不可用，但你可以手工编辑或导入字幕。" onClick={() => setStatus('Whisper 组件尚未安装，界面不会生成虚构的转写字幕。', 'info')}><Info size={11} /></button></div></div><div className="inspector-section cues-section"><div className="section-heading-row"><div><span className="section-kicker">02 / CAPTIONS</span><span className="subsection-title">字幕行</span></div><span className="cue-count">{project.subtitle.cues.length} 行</span></div><div className="subtitle-list">{project.subtitle.cues.map((cue, index) => <div className={`subtitle-row ${selectedCueId === cue.id ? 'cue-selected' : ''}`} key={cue.id} onClick={() => handleSubtitleCueSelection(cue)}><span className="cue-number">{String(index + 1).padStart(2, '0')}</span><div className="cue-fields"><div className="cue-time-fields"><input className="cue-time" value={formatCompactTime(cue.start)} aria-label="字幕起始时间" onChange={(event) => { const time = parseClock(event.target.value, cue.start); setSubtitleCue(cue.id, { start: time, end: Math.max(time + 0.2, cue.end) }) }} onClick={(event) => event.stopPropagation()} /><span>→</span><input className="cue-time" value={formatCompactTime(cue.end)} aria-label="字幕结束时间" onChange={(event) => { const time = parseClock(event.target.value, cue.end); setSubtitleCue(cue.id, { end: Math.max(cue.start + 0.2, time) }) }} onClick={(event) => event.stopPropagation()} /><button aria-label="删除字幕行" title="删除字幕行" onClick={(event) => { event.stopPropagation(); removeSubtitleCue(cue) }}><X size={11} /></button></div><textarea value={cue.text} rows={1} aria-label="字幕内容" onClick={(event) => event.stopPropagation()} onChange={(event) => { setSubtitleCue(cue.id, { text: event.target.value }); event.target.style.height = 'auto'; event.target.style.height = `${event.target.scrollHeight}px` }} /></div><span className="cue-duration">{cueToEnd(cue)}s</span></div>)}</div><button className="add-caption" onClick={() => { const cue = { id: `caption-${Date.now()}`, start: Math.min(duration - 0.5, project.playhead), end: Math.min(duration, project.playhead + 3), text: '新增字幕', edited: true }; applyEdit('添加字幕', (current) => ({ ...current, subtitle: { ...current.subtitle, enabled: true, cues: [...current.subtitle.cues, cue] }, clips: [...current.clips, addSubtitleClip(cue)] })); setSelectedCueId(cue.id); setStatus('已添加字幕行；导出前可校准起止时间。') }}><Plus size={12} />添加字幕行</button><div className="subtitle-bulk-actions"><button onClick={importSubtitleFile}><FolderOpen size={12} />导入 SRT</button><button onClick={exportSrt}><Download size={12} />导出 SRT</button></div></div><div className="inspector-section style-section"><div className="section-kicker">03 / STYLE</div><div className="mini-field-row"><span>字幕样式</span><div className="setting-readonly">经典 · 白字描边 <ChevronDown size={11} /></div></div><div className="mini-field-row"><span>字幕字号</span><div className="setting-stepper"><button aria-label="减小字号" onClick={() => updateProject((current) => ({ ...current, subtitle: { ...current.subtitle, fontSize: Math.max(20, current.subtitle.fontSize - 2) } }), '调整字幕字号')}><Minus size={10} /></button><span>{project.subtitle.fontSize} <i>px</i></span><button aria-label="增大字号" onClick={() => updateProject((current) => ({ ...current, subtitle: { ...current.subtitle, fontSize: Math.min(100, current.subtitle.fontSize + 2) } }), '调整字幕字号')}><Plus size={10} /></button></div></div><div className="mini-field-row"><span>描边底色</span><button className={`switch ${project.subtitle.background ? 'switch-on' : ''}`} role="switch" aria-checked={project.subtitle.background} aria-label="字幕背景" onClick={() => applyEdit('切换字幕背景', (current) => ({ ...current, subtitle: { ...current.subtitle, background: !current.subtitle.background } }))}><i /></button></div></div></div>
+    const whisperPercent = whisperStatus.totalBytes > 0
+      ? Math.round((whisperStatus.downloadedBytes / whisperStatus.totalBytes) * 100)
+      : 0
+    const atPlayhead = project.clips.find((clip) => ['video', 'audio'].includes(clip.kind)
+      && project.playhead >= clip.start && project.playhead < clip.start + clip.duration)
+    const hasTimelineSelection = selectedClipIds.length > 0 || Boolean(selectedId)
+    const fallbackClips = !hasTimelineSelection && atPlayhead ? resolveWhisperSelectionClips(project.clips, [atPlayhead.id]) : []
+    const availableClips = selectedSubtitleClips.length ? selectedSubtitleClips : fallbackClips
+    const canRecognizeSelection = availableClips.length > 0 && availableClips.length <= 20
+    const selectionLabel = selectedSubtitleClips.length
+      ? selectedSubtitleClips.length === 1 ? '已选 1 段' : `已选 ${selectedSubtitleClips.length} 段`
+      : fallbackClips.length ? '播放指针所在片段' : '未选片段'
+    const hasExistingCaptions = project.subtitle.cues.length > 0
+    const recognitionTitle = selectedSubtitleClips.length > 20
+      ? '一次最多识别 20 段，请减少所选片段'
+      : canRecognizeSelection ? '识别选中的音视频片段' : '请选择片段，或将播放指针移到片段内'
+    const statusLabel = whisperStatus.installing ? 'INSTALLING'
+      : whisperStatus.recognizing ? 'TRANSCRIBING'
+        : whisperStatus.ready ? 'READY' : 'OFFLINE'
+    const recognizedPercentage = Math.round(whisperStatus.recognitionProgress || 0)
+
+    return <div className="inspector-scroll">
+      <div className="inspector-section subtitle-status-card">
+        <div className="section-kicker">
+          <span>01 / TRANSCRIBE</span>
+          <span className={`local-model-pill ${whisperStatus.ready ? 'connected' : ''}`}><span />{statusLabel}</span>
+        </div>
+        <div className="asr-title">
+          <div className="asr-orbit"><Mic size={17} /><span>AI</span></div>
+          <div>
+            <h3>对白变字幕</h3>
+            <small>{whisperStatus.installing
+              ? whisperStatus.stage || '正在安装多语言模型'
+              : whisperStatus.recognizing
+                ? `${whisperStatus.stage || '正在识别'} · ${recognizedPercentage}%`
+                : whisperStatus.ready
+                  ? '多语言 Whisper small · 本地运行'
+                  : whisperStatus.supported ? '多语言 Whisper small 尚未安装' : '字幕识别支持 Apple Silicon Mac'}</small>
+          </div>
+        </div>
+        {whisperStatus.installing ? <>
+          <div className="subtitle-model-progress">
+            <div>
+              <span>{whisperStatus.stage || '正在安装模型'}</span>
+              <span>{whisperPercent}% · {(Number(whisperStatus.downloadedBytes || 0) / 1e9).toFixed(2)} / {(Number(whisperStatus.totalBytes || 0) / 1e9).toFixed(2)} GB</span>
+            </div>
+            <div className={`dubbing-progress ${whisperStatus.indeterminate ? 'is-indeterminate' : ''}`}>
+              <i style={{ width: `${whisperStatus.indeterminate ? 100 : whisperPercent}%` }} />
+            </div>
+          </div>
+          <button className="generate-subtitles subtitle-cancel-model" onClick={cancelWhisperInstall}>取消安装</button>
+        </> : <>
+          <div className="subtitle-model-actions">
+            {!whisperStatus.ready && <button className="subtitle-install-button"
+              disabled={!whisperStatus.supported || subtitleBusy || whisperStatus.recognizing || whisperStatus.installing}
+              onClick={installWhisper}>
+              <Download size={12} />{whisperStatus.modelPresent ? '修复 Whisper' : '安装 Whisper'}
+            </button>}
+            {whisperStatus.recognizing
+              ? <button className="subtitle-recognize-button" onClick={() => void window.videome?.cancelWhisperRecognition?.()}>取消识别</button>
+              : <button className="generate-subtitles subtitle-recognize-button"
+                disabled={!whisperStatus.ready || subtitleBusy || !canRecognizeSelection}
+                title={recognitionTitle} onClick={recognizeSpeech}>
+                <Sparkles size={14} />识别 {selectedSubtitleClips.length > 1 ? `${selectedSubtitleClips.length} 个片段` : '所选片段'}
+              </button>}
+            {whisperStatus.ready && <button className="subtitle-repair-button"
+              disabled={subtitleBusy || whisperStatus.recognizing || whisperStatus.installing}
+              onClick={installWhisper} title="重新校验或修复 Whisper 运行文件">
+              <RotateCw size={12} />修复
+            </button>}
+          </div>
+          {whisperStatus.recognizing && <div className="subtitle-recognition-progress">
+            <span>{whisperStatus.stage || '正在本地识别'}</span>
+            <span>{recognizedPercentage}%</span>
+            <div className="dubbing-progress"><i style={{ width: `${Math.max(2, recognizedPercentage)}%` }} /></div>
+          </div>}
+        </>}
+        {whisperStatus.error && <p className="subtitle-model-error" role="alert">{whisperStatus.error}</p>}
+        <div className="subtitles-note">
+          <LockKeyhole size={11} />
+          <span>音频仅在本机处理 · 自动识别原语字幕</span>
+          <span className="subtitle-selection-count">{selectionLabel}</span>
+        </div>
+        {hasExistingCaptions && <label className="subtitle-merge-option">
+          <input type="checkbox" checked={mergeWhisperSubtitles} onChange={(event) => {
+            const value = event.target.checked
+            setMergeWhisperSubtitles(value)
+            try { localStorage.setItem('videome-whisper-subtitle-preferences', value ? 'merge' : 'replace') } catch {}
+          }} />
+          <span>保留并合并已有字幕</span>
+        </label>}
+      </div>
+      <div className="inspector-section cues-section">
+        <div className="section-heading-row">
+          <div><span className="section-kicker">02 / CAPTIONS</span><span className="subsection-title">字幕行</span></div>
+          <span className="cue-count">{project.subtitle.cues.length} 行</span>
+        </div>
+        <div className="subtitle-list">{project.subtitle.cues.map((cue, index) => <div
+          className={`subtitle-row ${selectedCueId === cue.id ? 'cue-selected' : ''}`} key={cue.id}
+          onClick={() => handleSubtitleCueSelection(cue)}>
+          <span className="cue-number">{String(index + 1).padStart(2, '0')}</span>
+          <div className="cue-fields">
+            <div className="cue-time-fields">
+              <input className="cue-time" value={formatCompactTime(cue.start)} aria-label="字幕起始时间"
+                onChange={(event) => { const time = parseClock(event.target.value, cue.start); setSubtitleCue(cue.id, { start: time, end: Math.max(time + 0.2, cue.end) }) }} onClick={(event) => event.stopPropagation()} />
+              <span>→</span>
+              <input className="cue-time" value={formatCompactTime(cue.end)} aria-label="字幕结束时间"
+                onChange={(event) => { const time = parseClock(event.target.value, cue.end); setSubtitleCue(cue.id, { end: Math.max(cue.start + 0.2, time) }) }} onClick={(event) => event.stopPropagation()} />
+              <button aria-label="删除字幕行" title="删除字幕行" onClick={(event) => { event.stopPropagation(); removeSubtitleCue(cue) }}><X size={11} /></button>
+            </div>
+            <textarea value={cue.text} rows={1} aria-label="字幕内容" onClick={(event) => event.stopPropagation()}
+              onChange={(event) => { setSubtitleCue(cue.id, { text: event.target.value }); event.target.style.height = 'auto'; event.target.style.height = `${event.target.scrollHeight}px` }} />
+          </div>
+          <span className="cue-duration">{cueToEnd(cue)}s</span>
+        </div>)}</div>
+        <button className="add-caption" onClick={() => {
+          const cue = { id: `caption-${Date.now()}`, start: Math.min(duration - 0.5, project.playhead), end: Math.min(duration, project.playhead + 3), text: '新增字幕', edited: true }
+          applyEdit('添加字幕', (current) => ({ ...current, subtitle: { ...current.subtitle, enabled: true, cues: [...current.subtitle.cues, cue] }, clips: [...current.clips, addSubtitleClip(cue)] }))
+          setSelectedCueId(cue.id); setStatus('已添加字幕行；导出前可校准起止时间。')
+        }}><Plus size={12} />添加字幕行</button>
+        <div className="subtitle-bulk-actions">
+          <button onClick={importSubtitleFile}><FolderOpen size={12} />导入 SRT</button>
+          <button onClick={exportSrt}><Download size={12} />导出 SRT</button>
+        </div>
+      </div>
+      <div className="inspector-section style-section">
+        <div className="section-kicker">03 / STYLE</div>
+        <div className="mini-field-row"><span>字幕样式</span><div className="setting-readonly">经典 · 白字描边 <ChevronDown size={11} /></div></div>
+        <div className="mini-field-row"><span>字幕字号</span><div className="setting-stepper">
+          <button aria-label="减小字号" onClick={() => updateProject((current) => ({ ...current, subtitle: { ...current.subtitle, fontSize: Math.max(20, current.subtitle.fontSize - 2) } }), '调整字幕字号')}><Minus size={10} /></button>
+          <span>{project.subtitle.fontSize} <i>px</i></span>
+          <button aria-label="增大字号" onClick={() => updateProject((current) => ({ ...current, subtitle: { ...current.subtitle, fontSize: Math.min(100, current.subtitle.fontSize + 2) } }), '调整字幕字号')}><Plus size={10} /></button>
+        </div></div>
+        <div className="mini-field-row"><span>描边底色</span>
+          <button className={`switch ${project.subtitle.background ? 'switch-on' : ''}`} role="switch"
+            aria-checked={project.subtitle.background} aria-label="字幕背景"
+            onClick={() => applyEdit('切换字幕背景', (current) => ({ ...current, subtitle: { ...current.subtitle, background: !current.subtitle.background } }))}><i /></button>
+        </div>
+      </div>
+    </div>
   }
 
   function renderMusicInspector() {
@@ -2859,7 +3077,7 @@ function App() {
 
   function renderSubtitleBusy() {
     if (!subtitleBusy) return null
-    return <div className="overlay-busy"><div className="busy-orbit"><Waves size={19} /></div><div><b>检查本机语音模型</b><span>素材没有上传 · 未生成虚构转写</span></div></div>
+    return <div className="overlay-busy"><div className="busy-orbit"><Waves size={19} /></div><div><b>{whisperStatus.stage || '正在本机识别字幕'} {whisperStatus.recognizing ? `${Math.round(whisperStatus.recognitionProgress || 0)}%` : ''}</b><span>原始音频不会上传 · 字幕完成后将加入字幕轨</span><div className="subtitle-recognition-overlay-progress"><i style={{ width: `${Math.max(3, whisperStatus.recognitionProgress || 2)}%` }} /></div></div><button onClick={() => void window.videome?.cancelWhisperRecognition?.()}>取消</button></div>
   }
 
   const timelineShell = (
