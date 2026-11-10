@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Download, LoaderCircle, Mic, Pause, Play, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
+import { Download, LoaderCircle, Mic, Pause, Play, RefreshCw, Sparkles, Subtitles, Trash2, X } from 'lucide-react'
 import { resolveDubbingSources } from './dubbing-domain.js'
 import './dubbing.css'
 
@@ -37,6 +37,9 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
   const [emotion, setEmotion] = useState('neutral')
   const [ratePreset, setRatePreset] = useState('natural')
   const [pause, setPause] = useState('normal')
+  const [includeSubtitles, setIncludeSubtitles] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(preferenceKey) || 'null')?.includeSubtitles !== false } catch { return true }
+  })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [preview, setPreview] = useState(null)
@@ -65,8 +68,8 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
   const job = jobs.find((item) => item.id === selected)
   const running = active.has(job?.status)
   const hasRunningJobs = jobs.some((item) => active.has(item.status) || item.status === 'created')
-  const cloudReady = ttsSettingsLoaded && Boolean(ttsSettings.baseUrl && ttsSettings.transcriptionModel && (ttsSettings.ttsModel || ttsSettings.model) && ttsSettings.plannerModel && ttsSettings.voice && ttsSettings.keepApiKey)
-  const backendReady = backend === 'openai-cloud' ? cloudReady : Boolean(models?.ready)
+  const ttsReady = ttsSettingsLoaded && Boolean(ttsSettings.baseUrl && (ttsSettings.ttsModel || ttsSettings.model) && ttsSettings.voice && (ttsSettings.keepApiKey || ttsSettings.apiKey))
+  const cloudReady = ttsReady && Boolean(ttsSettings.transcriptionModel && ttsSettings.plannerModel)
   const selectionIds = selectedClipIds.length ? selectedClipIds : (selectedClipId ? [selectedClipId] : [])
   const resolved = resolveDubbingSources(currentProject(), selectionIds)
   const source = resolved.sources[0] || null
@@ -74,6 +77,38 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
   const batchJobs = batchIds.map((id) => jobs.find((item) => item.id === id)).filter(Boolean)
   const readyBatchJobs = batchJobs.filter((item) => item.status === 'ready')
   const batchReady = !batchJobs.length || batchJobs.every((item) => item.status === 'ready')
+
+  const missingBackendSettings = () => {
+    if (backend === 'openai-cloud') {
+      if (!ttsSettingsLoaded) return ['云端设置尚未加载']
+      const missing = []
+      if (!ttsSettings.baseUrl) missing.push('接口地址')
+      if (!ttsSettings.plannerModel) missing.push('规划模型')
+      if (!ttsSettings.transcriptionModel) missing.push('转写模型')
+      if (!(ttsSettings.ttsModel || ttsSettings.model)) missing.push('TTS 模型')
+      if (!ttsSettings.voice) missing.push('云端音色')
+      if (!(ttsSettings.keepApiKey || ttsSettings.apiKey)) missing.push('API Key')
+      return missing
+    }
+    if (backend === 'openai-compatible' && !ttsReady) {
+      if (!ttsSettingsLoaded) return ['云端设置尚未加载']
+      const missing = []
+      if (!ttsSettings.baseUrl) missing.push('接口地址')
+      if (!(ttsSettings.ttsModel || ttsSettings.model)) missing.push('TTS 模型')
+      if (!ttsSettings.voice) missing.push('云端音色')
+      if (!(ttsSettings.keepApiKey || ttsSettings.apiKey)) missing.push('API Key')
+      return missing
+    }
+    return models?.ready ? [] : ['本地语音模型']
+  }
+  const startConfigured = (action) => {
+    const missing = missingBackendSettings()
+    if (missing.length) {
+      setError(`请先配置${missing.join('、')}。`)
+      return
+    }
+    void create(action)
+  }
 
   const updateJob = (value) => {
     if (removedJobIds.current.has(value.id)) return
@@ -140,8 +175,8 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
     } catch {}
   }, [projectId])
   useEffect(() => {
-    try { localStorage.setItem(preferenceKey, JSON.stringify({ voice, backend, emotion, ratePreset, pause })) } catch {}
-  }, [voice, backend, emotion, ratePreset, pause])
+    try { localStorage.setItem(preferenceKey, JSON.stringify({ voice, backend, emotion, ratePreset, pause, includeSubtitles })) } catch {}
+  }, [voice, backend, emotion, ratePreset, pause, includeSubtitles])
   useEffect(() => {
     audioRef.current?.pause(); setPreview(null); setPreviewPlaying(false)
     setDrafts({}); setCueProsody({}); setGeneratingCueId(null); generatingCueRef.current = null; generationStartedRef.current = false; setVoice(job?.voice || 3); setBackend(job?.backend || 'local-expressive'); setEmotion(job?.style?.emotion || 'neutral'); setRatePreset(job?.style?.rate >= 1.06 ? 'fast' : job?.style?.rate <= 0.94 ? 'slow' : 'natural'); setPause(job?.style?.pause || 'normal')
@@ -162,12 +197,12 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
     }
     if (!batchReady || readyBatchJobs.length !== batchJobs.length) return
     try {
-      onApply(batchJobs.length > 1 ? batchJobs : batchJobs[0])
+      onApply(batchJobs.length > 1 ? batchJobs : batchJobs[0], { includeSubtitles })
       setAppliedJobIds(batchJobs.map((item) => item.id))
       setAutoBatch(false)
       setStep('result')
     } catch (failure) { setAutoBatch(false); setError(failure.message) }
-  }, [autoBatch, batchJobs, batchReady, readyBatchJobs.length, onApply, onClose])
+  }, [autoBatch, batchJobs, batchReady, readyBatchJobs.length, onApply, onClose, includeSubtitles])
 
   const create = (action = 'analyze') => invoke(async () => {
     if (!resolved.sources.length) return { ok: false, reason: sourceError || '请选择可处理的音频片段。' }
@@ -304,7 +339,7 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
   }
   const applyReady = (items = readyBatchJobs) => {
     if (!items.length) return
-    try { onApply(items.length > 1 ? items : items[0]); setAppliedJobIds((current) => [...new Set([...current, ...items.map((item) => item.id)])]); setStep('result') } catch (failure) { setError(failure.message) }
+    try { onApply(items.length > 1 ? items : items[0], { includeSubtitles }); setAppliedJobIds((current) => [...new Set([...current, ...items.map((item) => item.id)])]); setStep('result') } catch (failure) { setError(failure.message) }
   }
   const renderSettings = () => <div className="dubbing-settings-drawer" role="dialog" aria-label="智能配音设置">
     <div className="dubbing-settings-head"><b>配音设置</b><button className="icon-button" onClick={() => setSettingsOpen(false)} aria-label="关闭配音设置"><X size={16} /></button></div>
@@ -314,13 +349,14 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
       <section><h3>OpenAI 兼容云端</h3><div className="dubbing-cloud-settings"><label>接口地址<input aria-label="云端配音接口地址" value={ttsSettings.baseUrl} onChange={(event) => updateTtsSettings({ baseUrl: event.target.value })} placeholder="https://api.example.com/v1" /></label><label>规划模型（Sol/Luna）<input list="cloud-planner-presets" aria-label="云端规划模型" value={ttsSettings.plannerModel} onChange={(event) => updateTtsSettings({ plannerModel: event.target.value })} placeholder="gpt-6-luna" /><datalist id="cloud-planner-presets">{cloudPlannerPresets.map((item) => <option key={item} value={item} />)}</datalist></label><label>TTS 模型<input aria-label="云端 TTS 模型" value={ttsSettings.ttsModel || ttsSettings.model} onChange={(event) => updateTtsSettings({ ttsModel: event.target.value, model: event.target.value })} placeholder="网关提供的语音模型" /></label><label>转写模型<input aria-label="云端转写模型" value={ttsSettings.transcriptionModel} onChange={(event) => updateTtsSettings({ transcriptionModel: event.target.value })} placeholder="audio/transcriptions 模型" /></label><label>云端音色<select aria-label="云端配音音色" value={cloudVoicePresets.some((item) => item.id === ttsSettings.voice) ? ttsSettings.voice : '__custom__'} onChange={(event) => updateTtsSettings({ voice: event.target.value === '__custom__' ? '' : event.target.value })}><option value="__custom__">自定义音色 ID</option>{cloudVoicePresets.map((item) => <option key={item.id} value={item.id}>{item.name}（{item.id}）</option>)}</select>{!cloudVoicePresets.some((item) => item.id === ttsSettings.voice) && <input aria-label="自定义云端配音音色" value={ttsSettings.voice} onChange={(event) => updateTtsSettings({ voice: event.target.value })} placeholder="输入自定义音色 ID" />}</label><label>API Key<input aria-label="云端配音 API Key" type="password" value={ttsSettings.apiKey} placeholder={ttsSettings.keepApiKey ? '已保存，留空保持原 Key' : '粘贴 API Key'} onChange={(event) => updateTtsSettings({ apiKey: event.target.value })} /></label><button className={`dubbing-save-button dubbing-save-${ttsSettingsState}`} disabled={!ttsSettingsLoaded || busy || ttsSettingsState === 'saving'} onClick={() => void saveTtsSettings()}>{ttsSettingsState === 'saving' ? '保存中…' : ttsSettingsState === 'saved' ? '已保存' : ttsSettingsState === 'error' ? '重试保存' : '保存云端设置'}</button><button className={`dubbing-test-button dubbing-test-${ttsTestState}`} disabled={!ttsSettingsLoaded || busy || ttsTestState === 'testing'} onClick={() => void testTtsSettings()}>{ttsTestState === 'testing' ? '测试中…' : ttsTestState === 'success' ? '测试成功' : ttsTestState === 'error' ? '重试测试' : '测试接口'}</button></div>{ttsTestMessage && <p className={`dubbing-tts-test-message dubbing-tts-test-${ttsTestState}`}>{ttsTestMessage}</p>}<small className="dubbing-cloud-hint">Sol/Luna 负责规划，TTS 模型负责发声；没有真实 TTS 模型时不能生成 WAV。</small></section>
     </div>
   </div>
-  const renderPrepare = () => <div className="dubbing-step"><div className="dubbing-selection-card"><span className="section-kicker">当前选择 · {selectionIds.length} 段</span><h3>{source ? (resolved.sources.length > 1 ? `${resolved.sources.length} 段音频片段` : source.name) : '未选择可处理片段'}</h3><p>{source ? `${resolved.sources.map((item) => item.name).join('、')} · 总时长 ${resolved.sources.reduce((sum, item) => sum + item.duration, 0).toFixed(2)} 秒` : sourceError}</p>{resolved.issues.length > 0 && <div className="dubbing-warning">无法处理：{resolved.issues.map((item) => item.name).join('、')}</div>}</div><div className="dubbing-prepare-controls"><div className="dubbing-basic-settings"><label>语音生成后端<select aria-label="一键配音语音生成后端" value={backend} onChange={(event) => setBackend(event.target.value)}><option value="local-expressive">本地韵律增强</option><option value="kokoro-fast">本地快速模式</option><option value="openai-cloud">云端全流程（Sol/Luna + TTS）</option><option value="openai-compatible">仅云端 TTS</option></select></label>{backend !== 'openai-compatible' && backend !== 'openai-cloud' && <label>本地音色<select aria-label="一键配音本地音色" value={voice} onChange={(event) => setVoice(Number(event.target.value))}>{voices.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}</div>{backend !== 'openai-compatible' && backend !== 'openai-cloud' && <details className="dubbing-advanced"><summary>表现设置 · {emotions.find((item) => item.id === emotion)?.name} · {ratePreset === 'slow' ? '慢速' : ratePreset === 'fast' ? '快速' : '自然'} · {pause === 'strong' ? '明显停顿' : pause === 'light' ? '弱停顿' : '标准停顿'}</summary><div className="dubbing-basic-settings"><label>情绪<select aria-label="一键配音情绪" value={emotion} onChange={(event) => setEmotion(event.target.value)}>{emotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>语速<select aria-label="一键配音语速" value={ratePreset} onChange={(event) => setRatePreset(event.target.value)}><option value="slow">慢</option><option value="natural">自然</option><option value="fast">快</option></select></label><label>停顿<select aria-label="一键配音停顿" value={pause} onChange={(event) => setPause(event.target.value)}><option value="light">弱</option><option value="normal">标准</option><option value="strong">明显</option></select></label></div></details>}</div><div className="dubbing-step-actions"><button className="dubbing-primary-action" disabled={!resolved.sources.length || !backendReady || busy || hasRunningJobs} onClick={() => create('auto')}><Sparkles size={15} />{backend === 'openai-cloud' ? '云端一键识别并入轨' : '一键识别并入轨'}</button><button disabled={!resolved.sources.length || !backendReady || busy || hasRunningJobs} onClick={() => create('analyze')}><Mic size={14} />识别并翻译，进入校对</button><button className="dubbing-secondary-action" onClick={() => setSettingsOpen(true)}>模型、代理与云端设置</button></div></div>
+  const renderPrepare = () => <div className="dubbing-step"><div className="dubbing-selection-card"><span className="section-kicker">当前选择 · {selectionIds.length} 段</span><h3>{source ? (resolved.sources.length > 1 ? `${resolved.sources.length} 段音频片段` : source.name) : '未选择可处理片段'}</h3><p>{source ? `${resolved.sources.map((item) => item.name).join('、')} · 总时长 ${resolved.sources.reduce((sum, item) => sum + item.duration, 0).toFixed(2)} 秒` : sourceError}</p>{resolved.issues.length > 0 && <div className="dubbing-warning">无法处理：{resolved.issues.map((item) => item.name).join('、')}</div>}</div><div className="dubbing-prepare-controls"><div className="dubbing-basic-settings"><label>语音生成后端<select aria-label="一键配音语音生成后端" value={backend} onChange={(event) => setBackend(event.target.value)}><option value="local-expressive">本地韵律增强</option><option value="kokoro-fast">本地快速模式</option><option value="openai-cloud">云端全流程（Sol/Luna + TTS）</option><option value="openai-compatible">仅云端 TTS</option></select></label>{backend !== 'openai-compatible' && backend !== 'openai-cloud' && <label>本地音色<select aria-label="一键配音本地音色" value={voice} onChange={(event) => setVoice(Number(event.target.value))}>{voices.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}</div>{backend !== 'openai-compatible' && backend !== 'openai-cloud' && <details className="dubbing-advanced"><summary>表现设置 · {emotions.find((item) => item.id === emotion)?.name} · {ratePreset === 'slow' ? '慢速' : ratePreset === 'fast' ? '快速' : '自然'} · {pause === 'strong' ? '明显停顿' : pause === 'light' ? '弱停顿' : '标准停顿'}</summary><div className="dubbing-basic-settings"><label>情绪<select aria-label="一键配音情绪" value={emotion} onChange={(event) => setEmotion(event.target.value)}>{emotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>语速<select aria-label="一键配音语速" value={ratePreset} onChange={(event) => setRatePreset(event.target.value)}><option value="slow">慢</option><option value="natural">自然</option><option value="fast">快</option></select></label><label>停顿<select aria-label="一键配音停顿" value={pause} onChange={(event) => setPause(event.target.value)}><option value="light">弱</option><option value="normal">标准</option><option value="strong">明显</option></select></label></div></details>}</div><div className="dubbing-step-actions"><button className="dubbing-primary-action" disabled={!resolved.sources.length || busy || hasRunningJobs} onClick={() => startConfigured('auto')}><Sparkles size={15} />{backend === 'openai-cloud' ? '云端一键识别并入轨' : '一键识别并入轨'}</button><button disabled={!resolved.sources.length || busy || hasRunningJobs} onClick={() => startConfigured('analyze')}><Mic size={14} />识别并翻译，进入校对</button><button className="dubbing-secondary-action" onClick={() => setSettingsOpen(true)}>模型、代理与云端设置</button></div></div>
   const renderBatch = () => <div className="dubbing-step"><div className="dubbing-batch-summary"><b>批次处理中</b><span>{batchJobs.filter((item) => item.status === 'ready').length}/{batchJobs.length} 已完成 · {batchJobs.filter((item) => active.has(item.status)).length} 处理中 · {failedJobs.length} 失败</span></div><div className="dubbing-batch-layout"><nav className="dubbing-batch-list" aria-label="配音批次">{batchJobs.map((item) => <button key={item.id} className={selected === item.id ? 'selected' : ''} onClick={() => { setSelected(item.id); setStep(item.status === 'review' || item.status === 'ready' ? 'review' : 'batch') }}><strong>{item.source.name}</strong><small>{statusText(item)}</small></button>)}</nav><div className="dubbing-batch-detail">{job ? <><div className="dubbing-job-heading"><div><b>{job.source.name}</b><small>{running && <LoaderCircle size={12} className="loading-spin" />}{job.stage}</small></div>{running && <button disabled={busy} onClick={() => void invoke(() => api.cancelDubbingJob(job.id)).then((value) => value && updateJob(value))}>取消当前任务</button>}</div>{job.error && <p className="dubbing-error">{job.error}</p>}<div className="dubbing-progress-copy">{statusText(job)} · {job.percent ? `${Math.round(job.percent)}%` : ''}</div></> : <p>批次任务尚未开始。</p>}</div></div><div className="dubbing-step-actions"><button onClick={() => setStep('result')}>查看结果</button>{failedJobs.length > 0 && <button onClick={retryFailed}>重试失败项</button>}</div></div>
   const renderReview = () => <div className="dubbing-step"><div className="dubbing-batch-layout"><nav className="dubbing-batch-list">{batchJobs.map((item) => <button key={item.id} className={selected === item.id ? 'selected' : ''} onClick={() => setSelected(item.id)}><strong>{item.source.name}</strong><small>{statusText(item)}</small></button>)}</nav><div className="dubbing-editor">{job ? <><div className="dubbing-job-heading"><div><b>{job.source.name}</b><small>{statusText(job)}</small></div></div><div className="dubbing-options"><button disabled={!job.backgroundPath || busy} onClick={() => listen(job.backgroundPath, '保留背景试听')}>{previewButtonIcon(job.backgroundPath)}{previewButtonLabel(job.backgroundPath, '试听背景')}</button><button disabled={!job.mixPath || dirty || busy} onClick={() => listen(job.mixPath, '整段中文配音试听')}>{previewButtonIcon(job.mixPath)}{previewButtonLabel(job.mixPath, '整段试听')}</button><button disabled={busy || running || generatingCueId === '__all__' || !job.cues?.some((cue) => cue.status !== 'ready')} onClick={generateAll}><LoaderCircle size={13} className={generatingCueId === '__all__' ? 'loading-spin' : undefined} />{generatingCueId === '__all__' ? '整段生成中…' : '整段生成'}</button></div><div className="dubbing-cues">{job.cues.map((cue, index) => <article className="dubbing-cue" key={cue.id}><div className="dubbing-cue-time"><b>{String(index + 1).padStart(2, '0')}</b><span>{clock(cue.start)} → {clock(cue.end)}</span><small>{statusText(cue)}</small></div><p lang="en">{cue.text}</p><textarea aria-label={`第 ${index + 1} 句中文译文`} value={drafts[cue.id] ?? cue.translation} onChange={(event) => setDrafts((current) => ({ ...current, [cue.id]: event.target.value }))} rows={2} /><div className="dubbing-cue-tweaks"><label>情绪<select aria-label={`第 ${index + 1} 句情绪`} value={cueProsody[cue.id]?.emotion || cue.prosody?.emotion || emotion} onChange={(event) => setCueProsody((current) => ({ ...current, [cue.id]: { ...(current[cue.id] || {}), emotion: event.target.value } }))}>{emotions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label>语速<select aria-label={`第 ${index + 1} 句语速`} value={cueProsody[cue.id]?.ratePreset || (cue.prosody?.rate >= 1.06 ? 'fast' : cue.prosody?.rate <= 0.94 ? 'slow' : 'natural')} onChange={(event) => setCueProsody((current) => ({ ...current, [cue.id]: { ...(current[cue.id] || {}), ratePreset: event.target.value, rate: event.target.value === 'slow' ? 0.9 : event.target.value === 'fast' ? 1.1 : 1 } }))}><option value="slow">慢</option><option value="natural">自然</option><option value="fast">快</option></select></label><label>停顿<select aria-label={`第 ${index + 1} 句停顿`} value={cueProsody[cue.id]?.pause || cue.prosody?.pause || pause} onChange={(event) => setCueProsody((current) => ({ ...current, [cue.id]: { ...(current[cue.id] || {}), pause: event.target.value } }))}><option value="light">弱</option><option value="normal">标准</option><option value="strong">明显</option></select></label></div><div className="dubbing-cue-actions"><button disabled={busy || Boolean(generatingCueId)} onClick={() => generate(cue.id)}><RefreshCw size={12} className={generatingCueId === cue.id ? 'loading-spin' : undefined} />{generatingCueId === cue.id ? '生成中…' : '重新生成此句'}</button>{cue.audioPath && <button onClick={() => listen(cue.audioPath, `第 ${index + 1} 句试听`)}>{previewButtonIcon(cue.audioPath)}试听</button>}</div></article>)}</div>{preview && <div className="dubbing-player"><b>{preview.title}</b><audio key={preview.url} ref={audioRef} controls autoPlay src={preview.url} onPlay={() => setPreviewPlaying(true)} onPause={() => setPreviewPlaying(false)} onEnded={() => setPreviewPlaying(false)} /></div>}<div className="dubbing-step-actions"><button onClick={() => void invoke(saveDraft)}>保存校对</button>{job.status === 'ready' && <button className="dubbing-primary-action" disabled={dirty} onClick={() => applyReady([job])}>入轨当前片段</button>}</div></> : <p>请选择一个草稿。</p>}</div></div></div>
   const renderResult = () => <div className="dubbing-step"><div className="dubbing-result-card"><Sparkles size={22} /><h3>批次处理完成</h3><p>{readyBatchJobs.length} 段成功 · {failedJobs.length} 段失败 · {appliedCount} 段已入轨</p>{failedJobs.length > 0 && <div className="dubbing-error">失败片段：{failedJobs.map((item) => `${item.source.name}（${item.error || item.stage}）`).join('；')}</div>}</div><div className="dubbing-step-actions">{failedJobs.length > 0 && <button onClick={retryFailed}>重试失败项</button>}{pendingReadyJobs.length > 0 && <button className="dubbing-primary-action" onClick={() => applyReady(pendingReadyJobs)}>全部入轨</button>}<button onClick={onClose}>关闭</button></div></div>
   return <div className="dialog-scrim dubbing-scrim"><section className="dubbing-panel dubbing-wizard" role="dialog" aria-modal="true" aria-labelledby="dubbing-title">
     <header className="dialog-header"><div><span className="eyebrow">LOCAL · ENGLISH → 中文</span><h2 id="dubbing-title">智能配音</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭智能配音"><X size={18} /></button></header>
     <div className="dubbing-stepper" aria-label="配音流程"><button className={step === 'prepare' ? 'active' : ''} onClick={() => setStep('prepare')}>1 准备</button><button className={step === 'batch' ? 'active' : ''} onClick={() => batchJobs.length && setStep('batch')}>2 批次</button><button className={step === 'review' ? 'active' : ''} onClick={() => job && setStep('review')}>3 校对试听</button><button className={step === 'result' ? 'active' : ''} onClick={() => setStep('result')}>4 结果</button></div>
+    {(step === 'prepare' || step === 'review' || (step === 'result' && pendingReadyJobs.length > 0)) && <label className="dubbing-subtitle-option"><Subtitles size={17} /><span><b>同步添加中文字幕</b><small>入轨时按每句配音的时间添加，可在字幕面板继续编辑</small></span><input type="checkbox" checked={includeSubtitles} disabled={busy || autoBatch} onChange={(event) => setIncludeSubtitles(event.target.checked)} /></label>}
     {!api?.dubbingModels ? <p className="dubbing-error">请使用桌面版。本地智能配音首版支持 Apple Silicon Mac。</p> : <>{step === 'prepare' && renderPrepare()}{step === 'batch' && renderBatch()}{step === 'review' && renderReview()}{step === 'result' && renderResult()}{settingsOpen && renderSettings()}{error && <p className="dubbing-error" role="alert">{error}</p>}</>}
   </section></div>
 }

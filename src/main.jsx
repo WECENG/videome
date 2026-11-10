@@ -2056,10 +2056,10 @@ function App() {
     }
   }
 
-  async function applyDubbingJob(job) {
+  async function applyDubbingJob(job, options = {}) {
     try {
       const currentProject = projectRef.current
-      const next = Array.isArray(job) ? applyDubbingResults(currentProject, job) : applyDubbingResult(currentProject, job)
+      const next = Array.isArray(job) ? applyDubbingResults(currentProject, job, options) : applyDubbingResult(currentProject, job, options)
       // Dubbing outputs live under the app data directory. Resolve their
       // desktop media grants before committing the edit so pressing Play
       // immediately after insertion never creates an unusable 4179 fallback
@@ -2075,9 +2075,10 @@ function App() {
         ...next,
         assets: next.assets.map((asset) => resolvedById.get(asset.id) || asset),
       }
-      applyEdit('中文配音入轨', () => withTransport, assets)
+      const addedSubtitleCount = (next.subtitle?.cues.length || 0) - (currentProject.subtitle?.cues.length || 0)
+      applyEdit(addedSubtitleCount ? '中文配音与字幕入轨' : '中文配音入轨', () => withTransport, assets)
       setAssets((current) => mergeAssetLibraries(current, withTransport.assets))
-      setStatus('中文配音与保留背景已入轨，来源范围已静音；可一次撤销。')
+      setStatus(`中文配音与保留背景已入轨${addedSubtitleCount ? `，同步添加 ${addedSubtitleCount} 条中文字幕` : ''}，来源范围已静音；可一次撤销。`)
     } catch (error) {
       setStatus(`中文配音入轨失败：${error.message || '无法读取生成的音频文件。'}`, 'error')
     }
@@ -2883,7 +2884,7 @@ function App() {
       {renderTimelineMenu()}
       {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
-      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job) => { void applyDubbingJob(job) }} onClose={() => setShowDubbing(false)} />}
+      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job, options) => { void applyDubbingJob(job, options) }} onClose={() => setShowDubbing(false)} />}
       {renderRelinkDialog()}
       {renderProgress()}
       {renderSubtitleBusy()}

@@ -80,6 +80,11 @@
 .dubbing-stepper { display: flex; gap: 4px; margin: 0 0 12px; padding: 3px; border: 1px solid var(--line); border-radius: 7px; background: #f3f4ed; }
 .dubbing-stepper button { flex: 1; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
 .dubbing-stepper button.active { background: #e0ebe0; color: #41685a; font-weight: 700; }
+.dubbing-subtitle-option { display: flex; flex-shrink: 0; align-items: center; gap: 11px; margin-bottom: 12px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 8px; background: #f4f7ef; color: #52735b; cursor: pointer; }
+.dubbing-subtitle-option > span { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.dubbing-subtitle-option b { font-size: 12px; font-weight: 600; }
+.dubbing-subtitle-option > svg { flex-shrink: 0; }
+.dubbing-subtitle-option input { width: 16px; height: 16px; margin: 0; accent-color: #52735b; cursor: pointer; }
 .dubbing-step { min-height: 0; flex: 1; overflow: auto; padding: 4px 2px 8px; }
 .dubbing-selection-card { padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: linear-gradient(135deg,#f7f8f0,#eef4e9); }
 .dubbing-selection-card h3 { margin: 5px 0; color: var(--ink); font: 22px var(--serif); }

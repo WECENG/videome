@@ -1,3 +1,5 @@
+import { defaultProject } from './domain.js'
+
 // Dubbing provenance deliberately uses dubbingSource, never linkedClipId.
 const fields = ['id', 'assetId', 'trackId', 'kind', 'start', 'duration', 'trimStart', 'trimEnd', 'volume', 'muted', 'audioLinked', 'suppressEmbeddedAudio', 'linkedClipId']
 const signature = (clip) => Object.fromEntries(fields.map((key) => [key, clip[key] ?? null]))
@@ -62,22 +64,22 @@ export function repairDubbingPlaybackState(project) {
   }
 }
 
-export function applyDubbingResults(project, jobs) {
+export function applyDubbingResults(project, jobs, options = {}) {
   if (!jobs.length) throw new Error('请先选择已校对并试听的配音草稿。')
   const audioIds = new Set()
   for (const job of jobs) {
     if (audioIds.has(job.source.audioClipId)) throw new Error('所选草稿包含同一来源的重复配音，请只保留一条。')
     audioIds.add(job.source.audioClipId)
-    applyDubbingResult(project, job)
+    applyDubbingResult(project, job, options)
   }
-  let next = applyDubbingResult(project, jobs[0])
+  let next = applyDubbingResult(project, jobs[0], options)
   const tracks = next.tracks.filter((track) => track.label === '中文配音' || track.label === '保留背景')
     .sort((first, second) => first.label === '中文配音' ? -1 : second.label === '中文配音' ? 1 : 0)
-  for (const job of jobs.slice(1)) next = applyDubbingResult(next, job, { tracks })
+  for (const job of jobs.slice(1)) next = applyDubbingResult(next, job, { ...options, tracks })
   return next
 }
 
-export function applyDubbingResult(project, job, { tracks: sharedTracks } = {}) {
+export function applyDubbingResult(project, job, { tracks: sharedTracks, includeSubtitles = true } = {}) {
   if (project.projectId !== job.projectId) throw new Error('当前工程已切换，请回到任务来源工程。')
   if (project.clips.some((clip) => clip.dubbingSource?.taskId === job.id)) throw new Error('此配音已入轨，可撤销后重新应用。')
   const source = resolveDubbingSource(project, job.source.selectedClipId)
@@ -134,5 +136,40 @@ export function applyDubbingResult(project, job, { tracks: sharedTracks } = {}) 
   const nextClips = [...clips, ...additions].map((clip) => clip.dubbingSource && dubbingTrackIds.has(clip.trackId)
     ? { ...clip, muted: false }
     : clip)
-  return { ...project, assets: [...project.assets, ...assets], tracks: nextTracks, clips: nextClips }
+  const next = { ...project, assets: [...project.assets, ...assets], tracks: nextTracks, clips: nextClips }
+  return includeSubtitles ? addDubbingSubtitles(next, job) : next
+}
+
+function addDubbingSubtitles(project, job) {
+  const cues = job.cues.map((cue) => {
+    const text = String(cue.translation || '').trim()
+    if (!text) throw new Error('配音译文为空，请补全译文后再添加字幕。')
+    if (!Number.isFinite(cue.start) || !Number.isFinite(cue.end) || cue.start < 0 || cue.end <= cue.start || cue.end > job.source.duration) {
+      throw new Error('配音句子的时间范围无效，请重新生成配音草稿。')
+    }
+    return {
+      id: `dub-caption-${job.id}-${cue.id}`, start: job.source.start + cue.start, end: job.source.start + cue.end,
+      text, edited: false, source: 'dubbing',
+      dubbingSource: { taskId: job.id, cueId: cue.id, sourceClipId: job.source.selectedClipId },
+    }
+  })
+  const existingTrack = project.tracks.find((track) => track.type === 'subtitle' && !track.locked && !track.muted)
+  const track = existingTrack || {
+    id: `dubbing-subtitles-${job.id}`, type: 'subtitle', label: '配音字幕', accent: 'violet',
+    order: project.tracks.length, locked: false, muted: false,
+  }
+  const additions = cues.map((cue) => ({
+    id: `dub-caption-clip-${job.id}-${cue.dubbingSource.cueId}`, assetId: cue.id, trackId: track.id,
+    kind: 'subtitle', name: cue.text, start: cue.start, duration: cue.end - cue.start,
+    color: track.accent, sourceCueId: cue.id, sourceStart: cue.start, missing: false, muted: false,
+    dubbingSource: cue.dubbingSource,
+  }))
+  const subtitle = { ...defaultProject.subtitle, ...project.subtitle, enabled: true }
+  const allCues = [...subtitle.cues, ...cues].sort((first, second) => first.start - second.start || first.end - second.end)
+  return {
+    ...project,
+    tracks: existingTrack ? project.tracks : [...project.tracks, track],
+    clips: [...project.clips, ...additions],
+    subtitle: { ...subtitle, cues: allCues, text: allCues.map((cue) => cue.text).join('\n') },
+  }
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { createRequire } from 'node:module'
 import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState, resolveDubbingSource, resolveDubbingSources } from './dubbing-domain.js'
+import { createSrt, timelineExportSnapshot } from './domain.js'
+
+const { buildSubtitles } = createRequire(import.meta.url)('../electron/export.cjs')
 
 const project = () => ({ projectId: 'project', duration: 20, assets: [{ id: 'asset', path: '/source.mp4', audioCodec: 'aac' }],
   tracks: [{ id: 'v', type: 'video', locked: true }, { id: 'a', type: 'audio' }, { id: 'm', type: 'audio' }],
@@ -36,9 +40,9 @@ describe('local dubbing source and timeline application', () => {
     expect(next.clips.find((clip) => clip.id === 'a').volume).toBe(0)
     expect(next.clips.find((clip) => clip.id === 'v')).toEqual(source.clips[0])
     expect(next.clips.find((clip) => clip.id === 'music')).toEqual(source.clips[2])
-    expect(next.tracks.slice(-2).map((track) => track.label)).toEqual(['中文配音', '保留背景'])
-    expect(next.clips.slice(-2).map((clip) => [clip.start, clip.duration])).toEqual([[6, 2], [5, 6]])
-    expect(next.clips.slice(-2).every((clip) => !clip.linkedClipId && clip.dubbingSource.taskId === 'task')).toBe(true)
+    expect(next.tracks.slice(-3).map((track) => track.label)).toEqual(['中文配音', '保留背景', '配音字幕'])
+    expect(next.clips.slice(-3).map((clip) => [clip.start, clip.duration])).toEqual([[6, 2], [5, 6], [6, 2]])
+    expect(next.clips.slice(-3).every((clip) => !clip.linkedClipId && clip.dubbingSource.taskId === 'task')).toBe(true)
     expect(source.clips[1].volume).toBe(0.82)
     expect(JSON.parse(JSON.stringify(next))).toEqual(next)
   })
@@ -72,10 +76,10 @@ describe('local dubbing source and timeline application', () => {
     const first = result(source, 'a')
     const second = { ...result(source, 'a2'), id: 'task-2', source: resolveDubbingSource(source, 'a2'), cues: [{ id: 'cue-1', start: 0.5, end: 2, translation: '第二句', audioPath: '/second.wav', status: 'ready' }], backgroundPath: '/background-2.wav' }
     const next = applyDubbingResults(source, [first, second])
-    expect(next.tracks.slice(-2).map((track) => track.label)).toEqual(['中文配音', '保留背景'])
+    expect(next.tracks.slice(-3).map((track) => track.label)).toEqual(['中文配音', '保留背景', '配音字幕'])
     expect(next.tracks.filter((track) => track.label === '中文配音')).toHaveLength(1)
-    expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task-2').map((clip) => clip.start)).toEqual([13.5, 13])
-    expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task')).toHaveLength(2)
+    expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task-2').map((clip) => clip.start)).toEqual([13.5, 13, 13.5])
+    expect(next.clips.filter((clip) => clip.dubbingSource?.taskId === 'task')).toHaveLength(3)
   })
   it('reuses existing dubbing tracks and clears accidental mute state on later insertions', () => {
     const source = project()
@@ -102,5 +106,74 @@ describe('local dubbing source and timeline application', () => {
     })
     expect(repaired.tracks[0].muted).toBe(false)
     expect(repaired.clips[0]).toMatchObject({ volume: 0.82, muted: false })
+  })
+  it('adds editable Chinese captions aligned to each dubbing clip and exports them as SRT and video subtitles', () => {
+    const source = project()
+    const next = applyDubbingResult(source, result(source))
+    const [cue] = next.subtitle.cues
+    const clip = next.clips.find((item) => item.kind === 'subtitle')
+    expect(cue).toMatchObject({ start: 6, end: 8, text: '中文对白', source: 'dubbing' })
+    expect(clip).toMatchObject({ assetId: cue.id, sourceCueId: cue.id, sourceStart: 6, start: 6, duration: 2, name: cue.text })
+    expect(next.subtitle.enabled).toBe(true)
+    expect(source.subtitle).toBeUndefined()
+    expect(source.tracks).toHaveLength(3)
+    expect(source.clips).toHaveLength(3)
+    expect(createSrt(next.subtitle.cues)).toContain('00:00:06,000 --> 00:00:08,000\n中文对白')
+    expect(buildSubtitles(timelineExportSnapshot(next), { height: 1080 })).toEqual([
+      expect.objectContaining({ start: 6, duration: 2, text: '中文对白' }),
+    ])
+  })
+  it('preserves existing captions and their styles while appending in timeline order', () => {
+    const source = project()
+    source.tracks.push({ id: 'captions', type: 'subtitle', label: '字幕', locked: false, muted: false })
+    source.subtitle = { enabled: false, fontSize: 58, bottomPadding: 110, background: true, cues: [{ id: 'manual', start: 12, end: 14, text: '手工字幕', edited: true }] }
+    const next = applyDubbingResult(source, result(source))
+    expect(next.subtitle).toMatchObject({ enabled: true, fontSize: 58, bottomPadding: 110, background: true })
+    expect(next.subtitle.cues.map((cue) => cue.text)).toEqual(['中文对白', '手工字幕'])
+    expect(next.subtitle.cues[1]).toEqual(source.subtitle.cues[0])
+    expect(next.clips.find((clip) => clip.kind === 'subtitle').trackId).toBe('captions')
+    expect(next.tracks.filter((track) => track.type === 'subtitle')).toHaveLength(1)
+    expect(source.subtitle.enabled).toBe(false)
+  })
+  it.each([{ locked: true }, { muted: true }])('creates a visible caption track without modifying an unavailable track (%j)', (state) => {
+    const source = project()
+    const existing = { id: 'captions', type: 'subtitle', label: '字幕', locked: false, muted: false, ...state }
+    source.tracks.push(existing)
+    const next = applyDubbingResult(source, result(source))
+    expect(next.tracks.find((track) => track.id === existing.id)).toEqual(existing)
+    const track = next.tracks.find((item) => item.id === next.clips.find((clip) => clip.kind === 'subtitle').trackId)
+    expect(track.id).not.toBe(existing.id)
+    expect(track).toMatchObject({ type: 'subtitle', locked: false, muted: false })
+  })
+  it('allows captions to be disabled for single and batch insertions', () => {
+    const source = project()
+    source.subtitle = { enabled: false, cues: [] }
+    for (const next of [applyDubbingResult(source, result(source), { includeSubtitles: false }), applyDubbingResults(source, [result(source)], { includeSubtitles: false })]) {
+      expect(next.subtitle).toBe(source.subtitle)
+      expect(next.clips.some((clip) => clip.kind === 'subtitle')).toBe(false)
+      expect(next.tracks.some((track) => track.type === 'subtitle')).toBe(false)
+    }
+  })
+  it('keeps cue IDs unique across batches that reuse local cue IDs and reuses one caption track', () => {
+    const source = project()
+    source.clips.push({ ...source.clips[1], id: 'a2', start: 13, trimStart: 10, duration: 4 })
+    const second = { ...result(source, 'a2'), id: 'task-2' }
+    const next = applyDubbingResults(source, [second, result(source, 'a')])
+    expect(next.subtitle.cues.map((cue) => cue.start)).toEqual([6, 14])
+    expect(new Set(next.subtitle.cues.map((cue) => cue.id)).size).toBe(2)
+    expect(next.tracks.filter((track) => track.type === 'subtitle')).toHaveLength(1)
+    expect(next.clips.filter((clip) => clip.kind === 'subtitle')).toHaveLength(2)
+    const withoutCaptions = applyDubbingResults(source, [result(source, 'a'), second], { includeSubtitles: false })
+    expect(withoutCaptions.clips.some((clip) => clip.kind === 'subtitle')).toBe(false)
+  })
+  it('rejects invalid caption text and timing without mutating the source project', () => {
+    const source = project()
+    const before = structuredClone(source)
+    for (const patch of [{ translation: ' ' }, { start: -1 }, { end: 7 }, { end: 1 }]) {
+      const job = result(source)
+      job.cues[0] = { ...job.cues[0], ...patch }
+      expect(() => applyDubbingResult(source, job)).toThrow(/译文为空|时间范围无效/)
+      expect(source).toEqual(before)
+    }
   })
 })
