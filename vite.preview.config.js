@@ -10,7 +10,7 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const { buildExportArguments } = require('./electron/export.cjs')
+const { buildExportArguments, buildSubtitles } = require('./electron/export.cjs')
 const { toolCandidates, fontResources, nativePath, encoderFor, hardwareFailure } = require('./electron/runtime.cjs')
 const { stopChild } = require('./electron/processes.cjs')
 const { createAss } = await import('./src/domain.js')
@@ -319,7 +319,8 @@ function createJob(project, settings, inputPaths) {
   if (subtitlePath && snapshot.subtitle?.cues?.length) {
     const projectSize = snapshot.frameSize || { width: 1920, height: 1080 }
     fsSyncMkdir(outputDir)
-    require('node:fs').writeFileSync(subtitlePath, createAss(snapshot.subtitle.cues, {
+    const cues = buildSubtitles(snapshot, projectSize).map((cue) => ({ ...cue, end: cue.start + cue.duration }))
+    require('node:fs').writeFileSync(subtitlePath, createAss(cues, {
       width: projectSize.width,
       height: projectSize.height,
       fontSize: snapshot.subtitle.fontSize || 42,

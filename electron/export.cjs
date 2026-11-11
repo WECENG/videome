@@ -33,21 +33,23 @@ function escapeFilterString(value) {
 function buildSubtitles(project, frameSize) {
   const subtitles = project.subtitle || {}
   const trackMap = new Map((project.tracks || []).map((track) => [track.id, track]))
-  const subtitleClips = (project.clips || []).filter((clip) => clip.kind === 'subtitle' && clip.sourceCueId)
+  const subtitleClips = (project.clips || []).filter((clip) => clip.kind === 'subtitle')
   const dialogue = subtitles.enabled === false
     ? []
     : (subtitles.cues || [])
       .filter((cue) => typeof cue.text === 'string' && cue.text.trim() && Number(cue.end) > Number(cue.start))
       .flatMap((cue, index) => {
-        const clip = subtitleClips.find((candidate) => candidate.sourceCueId === cue.id)
-        const track = clip ? trackMap.get(clip.trackId) : null
-        if ((clip && (clip.muted || track?.muted)) || (!clip && [...trackMap.values()].some((item) => item.type === 'subtitle' && item.muted))) return []
-        const sourceStart = Number(clip?.sourceStart ?? cue.start)
-        const start = clip ? Number(clip.start) + Number(cue.start) - sourceStart : Number(cue.start)
-        const end = clip ? Number(clip.start) + Number(cue.end) - sourceStart : Number(cue.end)
-        const visibleStart = clip ? Math.max(start, Number(clip.start)) : start
-        const visibleEnd = clip ? Math.min(end, Number(clip.start) + Number(clip.duration)) : end
-        return visibleEnd > visibleStart ? [{ id: `cue${index}`, start: visibleStart, duration: visibleEnd - visibleStart, text: cue.text.trim() }] : []
+        const clips = subtitleClips.filter((candidate) => (candidate.sourceCueId || candidate.assetId) === cue.id)
+        return (clips.length ? clips : [null]).flatMap((clip, segmentIndex) => {
+          const track = clip ? trackMap.get(clip.trackId) : null
+          if (clip && (clip.muted || track?.muted)) return []
+          const sourceStart = Number(clip?.sourceStart ?? cue.start)
+          const start = clip ? Number(clip.start) + Number(cue.start) - sourceStart : Number(cue.start)
+          const end = clip ? Number(clip.start) + Number(cue.end) - sourceStart : Number(cue.end)
+          const visibleStart = clip ? Math.max(start, Number(clip.start)) : start
+          const visibleEnd = clip ? Math.min(end, Number(clip.start) + Number(clip.duration)) : end
+          return visibleEnd > visibleStart ? [{ id: `cue${index}-${segmentIndex}`, start: visibleStart, duration: visibleEnd - visibleStart, text: cue.text.trim() }] : []
+        })
       })
   const scale = Number(frameSize.height || 1080) / 1080
 

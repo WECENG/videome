@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { createSubtitleTrack } from './domain.js'
-import { createWhisperSubtitleEdit, resolveWhisperSelectionClips, timelineWhisperSourceRange } from './subtitle-domain.js'
+import { createRequire } from 'node:module'
+import { createSrt, createSubtitleTrack, splitClips } from './domain.js'
+import { activeSubtitleAtTime, createWhisperSubtitleEdit, formatSubtitleTime, parseSubtitleTime, refreshSubtitleClipText, resolveWhisperSelectionClips, subtitleOverlapIds, subtitleTimingError, timelineSubtitleCues, timelineWhisperSourceRange, updateSubtitleCue, updateTimelineSubtitleCue } from './subtitle-domain.js'
+const { buildSubtitles } = createRequire(import.meta.url)('../electron/export.cjs')
 
 const project = () => ({
   duration: 20,
@@ -10,6 +12,104 @@ const project = () => ({
 })
 
 describe('Whisper subtitle timeline edit', () => {
+  it('shows the next sentence at a shared boundary and uses the selected entry for genuine overlaps', () => {
+    const cues = [{ id: 'first', start: 0, end: 53.2, text: '上一句' }, { id: 'second', start: 53.2, end: 61.34, text: '选中的下一句' }]
+    expect(activeSubtitleAtTime(cues, 53.2, 'first')?.id).toBe('second')
+    expect(activeSubtitleAtTime(cues, 53.2 - 1e-10)?.id).toBe('second')
+    expect(activeSubtitleAtTime(cues, 61.34)).toBeNull()
+    const overlapping = [{ ...cues[0], end: 54 }, cues[1]]
+    expect(activeSubtitleAtTime(overlapping, 53.2, 'second')?.id).toBe('second')
+    expect(activeSubtitleAtTime(overlapping, 53.2)?.id).toBe('second')
+  })
+
+  it('uses moved and trimmed timeline positions for preview, editor, SRT and burn-in', () => {
+    const source = project()
+    source.subtitle.enabled = true
+    source.subtitle.cues = [{ id: 'manual', start: 1, end: 5, text: '已校对文字' }]
+    source.clips.push({ id: 'moved', kind: 'subtitle', sourceCueId: 'manual', trackId: 'captions', start: 53.2, duration: 2, sourceStart: 2, name: '旧文字' })
+    const cues = timelineSubtitleCues(source)
+    expect(cues).toMatchObject([{ id: 'moved', sourceCueId: 'manual', start: 53.2, end: 55.2, text: '已校对文字' }])
+    expect(activeSubtitleAtTime(cues, 53.2)?.text).toBe('已校对文字')
+    expect(activeSubtitleAtTime(cues, 1)).toBeNull()
+    expect(createSrt(cues)).toContain('00:00:53,200 --> 00:00:55,200')
+    expect(buildSubtitles(source, { height: 1080 })).toMatchObject([{ start: 53.2, duration: 2, text: '已校对文字' }])
+    const edited = updateTimelineSubtitleCue(source, 'moved', { text: '最新的手动修改' })
+    expect(edited.clips.at(-1)).toMatchObject({ start: 53.2, duration: 2, sourceStart: 2, name: '最新的手动修改' })
+    expect(timelineSubtitleCues(edited)[0]).toMatchObject({ start: 53.2, end: 55.2, text: '最新的手动修改' })
+    const retimed = updateTimelineSubtitleCue(edited, 'moved', { start: 53.3, end: 55.1 })
+    expect(retimed.clips.at(-1)).toMatchObject({ start: 53.3, sourceStart: 53.3 })
+    expect(timelineSubtitleCues(retimed)[0]).toMatchObject({ start: 53.3, end: 55.1 })
+  })
+
+  it('refreshes stale labels in old projects and edits split entries without merging their time ranges', () => {
+    const source = project()
+    source.subtitle.enabled = true
+    source.subtitle.cues = [{ id: 'manual', start: 1, end: 5, text: '手动修改后的文本' }]
+    source.clips.push({ id: 'caption', kind: 'subtitle', assetId: 'manual', sourceStart: 1, trackId: 'captions', start: 1, duration: 4, name: '旧文本', text: '旧文本' })
+    const refreshed = refreshSubtitleClipText(source)
+    expect(refreshed.clips.at(-1)).toMatchObject({ name: '手动修改后的文本', text: '手动修改后的文本' })
+    expect(refreshSubtitleClipText(refreshed)).toBe(refreshed)
+    const split = { ...refreshed, clips: splitClips(refreshed.clips, 3, ['captions']) }
+    const entries = timelineSubtitleCues(split)
+    expect(entries.map((cue) => [cue.start, cue.end])).toEqual([[1, 3], [3, 5]])
+    expect(buildSubtitles(split, { height: 1080 }).map((cue) => [cue.start, cue.duration])).toEqual([[1, 2], [3, 2]])
+    const edited = updateTimelineSubtitleCue(split, entries[1].id, { text: '新的共享文字' })
+    expect(edited.clips.filter((clip) => clip.kind === 'subtitle').map((clip) => clip.name)).toEqual(['新的共享文字', '新的共享文字'])
+    expect(timelineSubtitleCues(edited).map((cue) => [cue.start, cue.end])).toEqual([[1, 3], [3, 5]])
+    const retimed = updateTimelineSubtitleCue(edited, entries[1].id, { start: 3.1, end: 5.2 })
+    expect(timelineSubtitleCues(retimed).map((cue) => [cue.start, cue.end])).toEqual([[1, 3], [3.1, 5.2]])
+    expect(buildSubtitles(retimed, { height: 1080 }).map((cue) => cue.start)).toEqual([1, 3.1])
+  })
+
+  it('omits muted subtitle tracks from playback and burn-in without hiding their editor rows', () => {
+    const source = project()
+    source.subtitle.enabled = true
+    source.tracks[1].muted = true
+    source.clips.push({ id: 'caption', kind: 'subtitle', sourceCueId: 'manual', trackId: 'captions', start: 1, duration: 1 })
+    expect(timelineSubtitleCues(source)).toHaveLength(1)
+    expect(activeSubtitleAtTime(timelineSubtitleCues(source), 1.5)).toBeNull()
+    expect(buildSubtitles(source, { height: 1080 })).toEqual([])
+  })
+
+  it('accepts precise time drafts and rejects incomplete or out-of-range times', () => {
+    expect(formatSubtitleTime(59.9996)).toBe('01:00.000')
+    expect(formatSubtitleTime(3661.123)).toBe('61:01.123')
+    expect(parseSubtitleTime('01:02:03.456')).toBe(3723.456)
+    expect(parseSubtitleTime('61:01.123')).toBe(3661.123)
+    expect(parseSubtitleTime('26.1')).toBe(26.1)
+    expect(createSrt([{ start: 7.6, end: 59.9996, text: '毫秒精度' }])).toContain('00:00:07,600 --> 00:01:00,000')
+    for (const invalid of ['', '00:', '00:60.000', '01:61:02', '-1', '00:01.1234']) expect(Number.isNaN(parseSubtitleTime(invalid))).toBe(true)
+    expect(subtitleTimingError(3, 3)).toContain('晚于')
+    expect(subtitleTimingError(3, 3.1)).toBe('')
+  })
+
+  it('updates caption clips, preview text and SRT from one edit without touching media clips', () => {
+    const source = project()
+    source.clips.push({ id: 'caption', kind: 'subtitle', sourceCueId: 'manual', start: 1, duration: 1, sourceStart: 1, name: '已有字幕' })
+    source.clips.push({ id: 'legacy-caption', kind: 'subtitle', assetId: 'manual', start: 1, duration: 1, text: '已有字幕' })
+    const result = updateSubtitleCue(source, 'manual', { start: 20.1, end: 21.234, text: '校对后的字幕' })
+    expect(result.subtitle.cues[0]).toMatchObject({ start: 20.1, end: 21.234, text: '校对后的字幕', edited: true })
+    expect(result.subtitle.text).toBe('校对后的字幕')
+    expect(result.clips[0]).toBe(source.clips[0])
+    for (const clip of result.clips.slice(1)) {
+      expect(clip).toMatchObject({ start: 20.1, sourceStart: 20.1, name: '校对后的字幕' })
+      expect(clip.duration).toBeCloseTo(1.134)
+    }
+    expect(result.clips[2].text).toBe('校对后的字幕')
+    expect(result.duration).toBe(21.234)
+    expect(createSrt(result.subtitle.cues)).toContain('00:00:20,100 --> 00:00:21,234')
+    expect(source.subtitle.cues[0].text).toBe('已有字幕')
+    expect(updateSubtitleCue(source, 'manual', { end: 0 })).toBe(source)
+    expect(updateSubtitleCue(source, 'missing', { text: 'x' })).toBe(source)
+  })
+
+  it('marks both sides of overlapping intervals, including nested subtitles, but permits adjacent lines', () => {
+    expect([...subtitleOverlapIds([
+      { id: 'outer', start: 0, end: 10 }, { id: 'inner', start: 1, end: 2 },
+      { id: 'later', start: 3, end: 4 }, { id: 'adjacent', start: 10, end: 11 },
+    ])]).toEqual(['outer', 'inner', 'later'])
+  })
+
   it('creates a uniquely identified subtitle track without colliding with graphic tracks', () => {
     const tracks = [{ id: 'subtitles', type: 'graphics', order: 0 }, { id: 'existing-captions', type: 'subtitle', label: '字幕', order: 1 }]
     expect(createSubtitleTrack(tracks, 'new-captions')).toMatchObject({ id: 'new-captions', type: 'subtitle', label: '字幕 2', order: 2, locked: false, muted: false })

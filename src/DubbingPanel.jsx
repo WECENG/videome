@@ -24,7 +24,7 @@ const cloudVoicePresets = [
   { id: 'shimmer', name: '微光' },
 ]
 
-export default function DubbingPanel({ currentProject, selectedClipId, selectedClipIds = [], onApply, onClose }) {
+export default function DubbingPanel({ currentProject, selectedClipId, selectedClipIds = [], onApply, onClose, initialSettingsOpen = false }) {
   const api = window.videome
   const [models, setModels] = useState(null)
   const [jobs, setJobs] = useState([])
@@ -58,7 +58,7 @@ export default function DubbingPanel({ currentProject, selectedClipId, selectedC
   const [autoBatch, setAutoBatch] = useState(false)
   const [appliedJobIds, setAppliedJobIds] = useState([])
   const [step, setStep] = useState('prepare')
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(initialSettingsOpen)
   const mounted = useRef(true)
   const audioRef = useRef(null)
   const removedJobIds = useRef(new Set())

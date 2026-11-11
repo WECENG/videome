@@ -5,7 +5,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
-const { buildExportArguments, classifyAsset } = require('./export.cjs')
+const { buildExportArguments, buildSubtitles, classifyAsset } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
 const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectBackupSourcePath, projectFileName, withProjectExtension, writeProjectBackup, writeProjectSnapshot } = require('./project.cjs')
 const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
@@ -793,7 +793,7 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
   const disk = await fs.statfs(path.dirname(outputPath))
   if (size && Number(disk.bavail) * Number(disk.bsize) < size * 1.16) return { ok: false, reason: '导出目标磁盘空间不足。' }
   const temporaryPath = path.join(path.dirname(outputPath), `.${path.basename(outputPath)}.${Date.now()}.partial.${format}`)
-  const subtitles = project.subtitle?.enabled === false ? [] : (project.subtitle?.cues || []).filter((cue) => cue.text?.trim() && Number(cue.end) > Number(cue.start))
+  const subtitles = buildSubtitles(project, project.frameSize || { width: 1920, height: 1080 }).map((cue) => ({ ...cue, end: cue.start + cue.duration }))
   const subtitlePath = subtitles.length ? path.join(os.tmpdir(), `videome-${crypto.randomUUID()}.ass`) : null
   const escapeAss = (value) => String(value).replace(/\\/g, '\\\\').replace(/\{/g, '\\{').replace(/\}/g, '\\}').replace(/\n/g, '\\N').replace(/[<>]/g, '')
 

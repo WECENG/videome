@@ -61,10 +61,12 @@ export const sampleProject = {
 
 export const formatTime = (seconds, { milliseconds = false } = {}) => {
   const safe = Math.max(0, Number(seconds) || 0)
-  const hours = Math.floor(safe / 3600)
-  const minutes = Math.floor((safe % 3600) / 60)
-  const wholeSeconds = Math.floor(safe % 60)
-  const fraction = Math.floor((safe % 1) * 1000)
+  const totalMilliseconds = Math.round(safe * 1000)
+  const totalSeconds = milliseconds ? Math.floor(totalMilliseconds / 1000) : Math.floor(safe)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const wholeSeconds = totalSeconds % 60
+  const fraction = totalMilliseconds % 1000
   const base = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')}`
   return milliseconds ? `${base},${String(fraction).padStart(3, '0')}` : base
 }

@@ -105,8 +105,9 @@ import {
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
 import DubbingPanel from './DubbingPanel.jsx'
+import SubtitleEditor from './SubtitleEditor.jsx'
 import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState } from './dubbing-domain.js'
-import { createWhisperSubtitleEdit, resolveWhisperSelectionClips, timelineWhisperSourceRange } from './subtitle-domain.js'
+import { activeSubtitleAtTime, createWhisperSubtitleEdit, refreshSubtitleClipText, resolveWhisperSelectionClips, subtitleClipCueId, timelineSubtitleCues, timelineWhisperSourceRange, updateSubtitleCue, updateTimelineSubtitleCue } from './subtitle-domain.js'
 import { moveTimelineClips, removeTimelineClips, selectTimelineClips, timelineMoveIds } from './timeline-selection.js'
 import { DeleteTrackDialog, TimelineTrackMenu } from './TimelineTrackMenu.jsx'
 import { createBlankProject, isExampleProject, projectFileName, readProjectSession, writeProjectSession } from './project-session.js'
@@ -148,6 +149,13 @@ function App() {
   const [activeTab, setActiveTab] = useState('edit')
   const [activePanel, setActivePanel] = useState('素材库')
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
+  const [subtitleWorkbench, setSubtitleWorkbench] = useState(false)
+  const [subtitlePanelWidth, setSubtitlePanelWidth] = useState(() => {
+    try { return Math.max(320, Math.min(560, Number(localStorage.getItem('videome-subtitle-panel-width')) || 360)) } catch { return 360 }
+  })
+  const [subtitleModelExpanded, setSubtitleModelExpanded] = useState(false)
+  const [subtitleRecognitionNotice, setSubtitleRecognitionNotice] = useState('')
+  const [subtitleAuditionId, setSubtitleAuditionId] = useState(null)
   const [activeTrackId, setActiveTrackId] = useState('video-main')
   const [selectedId, setSelectedId] = useState(null)
   const [selectedClipIds, setSelectedClipIds] = useState([])
@@ -185,7 +193,6 @@ function App() {
   })
   const [editHistory, setEditHistory] = useState([])
   const [editFuture, setEditFuture] = useState([])
-  const [subtitleGenerated, setSubtitleGenerated] = useState(false)
   const [relinkQueue, setRelinkQueue] = useState([])
   const [subtitleBusy, setSubtitleBusy] = useState(false)
   const [whisperStatus, setWhisperStatus] = useState({ supported: false, ready: false, installing: false, recognizing: false, stage: '', error: null, totalBytes: 0, downloadedBytes: 0, recognitionProgress: 0 })
@@ -195,6 +202,7 @@ function App() {
   const [showExport, setShowExport] = useState(false)
   const [showBatchMix, setShowBatchMix] = useState(false)
   const [showDubbing, setShowDubbing] = useState(false)
+  const [dubbingSettingsRequested, setDubbingSettingsRequested] = useState(false)
   const [musicFiles, setMusicFiles] = useState([])
   const [recordingMusic, setRecordingMusic] = useState(null)
   const [previewSeeking, setPreviewSeeking] = useState(false)
@@ -213,6 +221,8 @@ function App() {
   const projectNameInputRef = useRef(null)
   const timelineAudioPlayersRef = useRef(new Map())
   const playLoopRef = useRef(null)
+  const subtitleAuditionRef = useRef(null)
+  const workspaceRef = useRef(null)
   const audioFrameRef = useRef(0)
   const browserSessionRef = useRef(null)
   const previewAttemptRef = useRef(new Set())
@@ -284,7 +294,6 @@ function App() {
 
   const duration = Math.max(1, Number(project.duration) || 1)
   const safeExportSettings = project.exportSettings || defaultProject.exportSettings
-  const safeSubtitle = project.subtitle || defaultProject.subtitle
   const timelineScaleBase = 12.4
   const minimumZoom = 0.15
   const timelineContentWidth = Math.max(1, duration * timelineScaleBase * zoom)
@@ -292,7 +301,9 @@ function App() {
   const selectedClip = useMemo(() => project.clips.find((clip) => clip.id === selectedId) || null, [project.clips, selectedId])
   const selectedAsset = useMemo(() => project.assets.find((asset) => asset.id === selectedClip?.assetId) || null, [project.assets, selectedClip])
   const activeTrack = useMemo(() => project.tracks.find((track) => track.id === activeTrackId) || project.tracks.find((track) => track.type === 'video') || project.tracks[0], [project.tracks, activeTrackId])
-  const selectedSubtitle = useMemo(() => safeSubtitle.cues.find((cue) => project.playhead >= cue.start && project.playhead <= cue.end), [safeSubtitle.cues, project.playhead])
+  const subtitleTimelineCues = useMemo(() => timelineSubtitleCues(project), [project.subtitle, project.clips, project.tracks])
+  const selectedSubtitle = useMemo(() => project.subtitle.enabled ? activeSubtitleAtTime(subtitleTimelineCues, project.playhead, selectedCueId) : null, [subtitleTimelineCues, project.playhead, project.subtitle.enabled, selectedCueId])
+  const subtitleWorkbenchOpen = activeTab === 'subtitles' && subtitleWorkbench && !inspectorCollapsed
   const selectedSubtitleClips = useMemo(() => {
     const ids = selectedClipIds.length ? selectedClipIds : selectedId ? [selectedId] : []
     return resolveWhisperSelectionClips(project.clips, ids)
@@ -721,6 +732,8 @@ function App() {
   }
 
   function setPlayhead(value, selectedClipId = undefined) {
+    subtitleAuditionRef.current = null
+    setSubtitleAuditionId(null)
     const next = Math.max(0, Math.min(duration, value))
     liveTransportRef.current.position = next
     liveTransportRef.current.lastClock = 0
@@ -914,7 +927,11 @@ function App() {
     setActivePanel(activeClip ? '属性检查器' : '素材库')
     if (activeClip && activeClip.start >= 0) setPlayhead(activeClip.start, activeClip.id)
 
-    setActiveTab('edit')
+    if (activeClip?.kind === 'subtitle') {
+      setSelectedCueId(activeClip.id)
+      setActiveTab('subtitles')
+      setInspectorCollapsed(false)
+    } else if (!subtitleWorkbenchOpen) setActiveTab('edit')
   }
 
   function addSubtitleClip(cue) {
@@ -1239,6 +1256,9 @@ function App() {
     setProjectPath(path)
     updateSelectedAssetIds([])
     updateSelectedClipIds([])
+    subtitleAuditionRef.current = null
+    setSubtitleAuditionId(null)
+    setSubtitleRecognitionNotice('')
     setPlaying(false)
     setShowProjectMenu(false)
     setShowProjectLocation(false)
@@ -1701,25 +1721,65 @@ function App() {
     setStatus(`已在 ${formatTime(marker.start)} 标记当前位置。`)
   }
 
-  function setSubtitleCue(cueId, patch) {
-    applyEdit('修改字幕', (current) => ({
-      ...current,
-      subtitle: {
-        ...current.subtitle,
-        cues: current.subtitle.cues.map((cue) => cue.id === cueId ? { ...cue, ...patch, edited: true } : cue),
-      },
-    }))
+  function setSubtitleCue(cueId, patch, recordHistory = true) {
+    updateProject((current) => current.clips.some((clip) => clip.id === cueId && clip.kind === 'subtitle')
+      ? updateTimelineSubtitleCue(current, cueId, patch) : updateSubtitleCue(current, cueId, patch), recordHistory ? '修改字幕' : '')
   }
 
-  function handleSubtitleCueSelection(cue) {
+  function handleSubtitleCueSelection(cue, seek = true) {
     setSelectedCueId(cue.id)
-    setProject((current) => ({ ...current, playhead: cue.start }))
-    const matchingClip = project.clips.find((clip) => clip.kind === 'subtitle' && clip.sourceCueId === cue.id)
+    if (!seek) return
+    const matchingClip = projectRef.current.clips.find((clip) => clip.kind === 'subtitle' && (clip.id === cue.clipId || subtitleClipCueId(clip) === cue.id))
     if (matchingClip) {
       updateSelectedClipIds([matchingClip.id])
       timelineSelectionAnchorRef.current = matchingClip.id
-      setSelectedId(matchingClip.id)
+      setActiveTrackId(matchingClip.trackId)
+      const viewport = timelineRef.current
+      if (viewport) {
+        const position = cue.start / duration * timelineContentWidth
+        if (position < viewport.scrollLeft || position > viewport.scrollLeft + viewport.clientWidth - 50) viewport.scrollLeft = Math.max(0, position - viewport.clientWidth * 0.2)
+      }
     }
+    setPlayhead(cue.start, matchingClip?.id)
+  }
+
+  function toggleSubtitleAudition(cue) {
+    if (subtitleAuditionRef.current?.cueId === cue.id && liveTransportRef.current.playing) { togglePlayback(true); return }
+    const resume = subtitleAuditionRef.current?.cueId === cue.id && projectRef.current.playhead >= cue.start && projectRef.current.playhead < cue.end
+    if (!resume) handleSubtitleCueSelection(cue)
+    subtitleAuditionRef.current = { cueId: cue.id }
+    setSubtitleAuditionId(cue.id)
+    if (!liveTransportRef.current.playing) togglePlayback(true)
+  }
+
+  function openSubtitleWorkbench(open) {
+    setSubtitleWorkbench(open)
+    setInspectorCollapsed(false)
+    if (open) setSubtitleRecognitionNotice('')
+  }
+
+  function resizeSubtitlePanel(event) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function moveSubtitlePanel(event) {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+    const bounds = workspaceRef.current.getBoundingClientRect()
+    setSubtitlePanelWidth(Math.max(320, Math.min(560, bounds.width - 220, bounds.right - event.clientX)))
+  }
+
+  useEffect(() => {
+    try { localStorage.setItem('videome-subtitle-panel-width', String(subtitlePanelWidth)) } catch {}
+  }, [subtitlePanelWidth])
+
+  function addManualSubtitle() {
+    const cue = { id: `caption-${globalThis.crypto.randomUUID()}`, start: project.playhead, end: project.playhead + 3, text: '新增字幕', edited: true }
+    const clip = addSubtitleClip(cue)
+    applyEdit('添加字幕', (current) => ({ ...current, duration: Math.max(current.duration, cue.end), subtitle: { ...current.subtitle, enabled: true, cues: [...current.subtitle.cues, cue], text: [...current.subtitle.cues.map((item) => item.text), cue.text].join('\n') }, clips: [...current.clips, clip] }))
+    setSelectedCueId(clip.id)
+    setStatus('已添加字幕行，可修改文字和时间。')
   }
 
   function loadSubtitlesToTimeline(cues, replace = false) {
@@ -1729,6 +1789,7 @@ function App() {
       clips: [...(replace ? current.clips.filter((clip) => clip.kind !== 'subtitle') : current.clips), ...add],
       subtitle: { ...current.subtitle, enabled: true, cues: [...(replace ? [] : current.subtitle.cues), ...cues] },
     }))
+    setSelectedCueId(add[0]?.id || null)
   }
 
   async function importSubtitleFile() {
@@ -1750,12 +1811,11 @@ function App() {
       return
     }
     loadSubtitlesToTimeline(cues, true)
-    setSelectedCueId(cues[0].id)
     setStatus(`已导入 ${cues.length} 行 SRT 字幕并同步到时间轴。`)
   }
 
   async function exportSrt() {
-    const content = createSrt(project.subtitle.cues)
+    const content = createSrt(subtitleTimelineCues.filter((cue) => !cue.muted))
     if (!content) {
       setStatus('当前没有字幕可导出。', 'info')
       return
@@ -1849,8 +1909,8 @@ function App() {
       const prefix = `whisper-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
       const committed = createWhisperSubtitleEdit(projectRef.current, allCues, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: prefix, merge: mergeExistingCaptions })
       applyEdit('识别语音并添加字幕', (projectState) => createWhisperSubtitleEdit(projectState, allCues, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: prefix, merge: mergeExistingCaptions }).project)
-      setSubtitleGenerated(true)
-      setSelectedCueId(committed.cues[0].id)
+      setSelectedCueId(committed.project.clips.find((clip) => clip.sourceCueId === committed.cues[0].id)?.id || committed.cues[0].id)
+      setSubtitleRecognitionNotice(`已生成 ${committed.cues.length} 条字幕`)
       setWhisperStatus((state) => ({ ...state, recognizing: false, error: null, stage: '识别完成', recognitionProgress: 100 }))
       setStatus(`已识别 ${sources.length} 个片段，共 ${committed.cues.length} 条原语字幕，并添加到时间线；可编辑、导出或撤销。`)
     } catch (error) {
@@ -2039,16 +2099,14 @@ function App() {
   }
 
   function removeSubtitleCue(cue) {
-    applyEdit('删除字幕', (current) => ({
-      ...current,
-      subtitle: { ...current.subtitle, cues: current.subtitle.cues.filter((item) => item.id !== cue.id) },
-      clips: current.clips.filter((clip) => clip.sourceCueId !== cue.id),
-    }))
+    applyEdit('删除字幕', (current) => {
+      const sourceId = cue.sourceCueId || cue.id
+      const clips = current.clips.filter((clip) => cue.clipId ? clip.id !== cue.clipId : clip.kind !== 'subtitle' || subtitleClipCueId(clip) !== sourceId)
+      const retained = clips.some((clip) => clip.kind === 'subtitle' && subtitleClipCueId(clip) === sourceId)
+      const cues = current.subtitle.cues.filter((item) => item.id !== sourceId || retained)
+      return { ...current, clips, subtitle: { ...current.subtitle, cues, text: cues.map((item) => item.text).join('\n') } }
+    })
     setStatus('已删除字幕行。')
-  }
-
-  function cueToEnd(cue) {
-    return (cue.end - cue.start).toFixed(1)
   }
 
   function toggleFullscreen() {
@@ -2092,18 +2150,23 @@ function App() {
     updateProject({ name: value.trim() || '未命名项目' }, '修改工程名称')
   }
 
-  function togglePlayback() {
+  function togglePlayback(subtitleOnly = false) {
+    if (subtitleOnly !== true) { subtitleAuditionRef.current = null; setSubtitleAuditionId(null) }
     const video = playerRef.current
     const stateProject = projectRef.current
     const currentClip = findActiveVisualClip(stateProject, stateProject.playhead)
     const currentAsset = stateProject.assets.find((asset) => asset.id === currentClip?.assetId)
-    if (playing) {
+    if (liveTransportRef.current.playing) {
+      liveTransportRef.current.playing = false
       if (video && !video.paused) video.pause()
       syncTimelineAudio(stateProject.playhead, false, stateProject)
       setPlaying(false)
       return
     }
 
+    liveTransportRef.current.playing = true
+    liveTransportRef.current.position = stateProject.playhead
+    liveTransportRef.current.lastClock = 0
     syncTimelineAudio(stateProject.playhead, true, stateProject)
     setPlaying(true)
     if (video && currentAsset?.path && !currentAsset.missing && currentAsset.kind === 'video') {
@@ -2174,6 +2237,20 @@ function App() {
         state.position = Math.min(duration, playheadClip.start + Math.max(0, currentVideo.currentTime - (playheadClip.trimStart || 0)))
       } else {
         state.position = Math.min(duration, state.position + elapsed)
+      }
+      const audition = subtitleAuditionRef.current
+      const auditionCue = audition && timelineSubtitleCues(currentProject).find((cue) => cue.id === audition.cueId)
+      if (audition && (!auditionCue || state.position >= auditionCue.end)) {
+        const end = auditionCue?.end ?? state.position
+        state.position = end
+        state.playing = false
+        state.lastClock = 0
+        if (currentVideo && !currentVideo.paused) currentVideo.pause()
+        syncTimelineAudio(end, false, currentProject)
+        projectRef.current = { ...projectRef.current, playhead: end }
+        setProject((current) => ({ ...current, playhead: end }))
+        setPlaying(false)
+        return
       }
       const frameRate = Number(projectRef.current.frameRate.numerator || 30) / Number(projectRef.current.frameRate.denominator || 1)
       const video = playerRef.current
@@ -2407,6 +2484,10 @@ function App() {
   }, [playing])
 
   function renderTimelineClip(clip, track, trackIndex, clipIndex) {
+    if (clip.kind === 'subtitle') {
+      const cue = project.subtitle.cues.find((item) => item.id === subtitleClipCueId(clip))
+      if (cue) clip = { ...clip, name: cue.text }
+    }
     const left = (clip.start / duration) * timelineContentWidth
     const width = Math.max(28, (clip.duration / duration) * timelineContentWidth)
     const selected = selectedClipIds.length ? selectedClipIds.includes(clip.id) : clip.id === selectedId
@@ -2775,7 +2856,17 @@ function App() {
   }
 
   function renderRightInspector() {
-    return <aside className={`inspector-panel ${inspectorCollapsed ? 'inspector-panel-collapsed' : ''}`}><div className="inspector-heading"><div><span className="eyebrow">INSPECTOR</span><h2>{activeTab === 'subtitles' ? '字幕编辑' : activeTab === 'music' ? '配乐编排' : activeTab === 'settings' ? '画幅与声音' : '属性检查器'}</h2></div><button className="icon-button compact inspector-toggle" onClick={() => setInspectorCollapsed((collapsed) => !collapsed)} aria-label={inspectorCollapsed ? '展开检查器' : '收起检查器'} title={inspectorCollapsed ? '展开检查器' : '收起检查器'}>{inspectorCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}</button></div>{activeTab === 'subtitles' ? renderSubtitleInspector() : activeTab === 'music' ? renderMusicInspector() : activeTab === 'settings' ? renderProjectSettings() : renderClipInspector()}</aside>
+    return <aside className={`inspector-panel ${activeTab === 'subtitles' ? 'subtitle-inspector' : ''} ${inspectorCollapsed ? 'inspector-panel-collapsed' : ''}`}>
+      {activeTab === 'subtitles' && !inspectorCollapsed && !subtitleWorkbenchOpen && <div className="subtitle-panel-resizer" role="separator" aria-label="调整字幕侧栏宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={560} aria-valuenow={subtitlePanelWidth} tabIndex={0}
+        onPointerDown={resizeSubtitlePanel} onPointerMove={moveSubtitlePanel}
+        onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) }}
+        onKeyDown={(event) => {
+          if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+            event.preventDefault(); event.stopPropagation()
+            setSubtitlePanelWidth((value) => event.key === 'Home' ? 320 : event.key === 'End' ? 560 : Math.max(320, Math.min(560, value + (event.key === 'ArrowLeft' ? 20 : -20))))
+          }
+        }} />}
+      <div className="inspector-heading"><div><span className="eyebrow">{subtitleWorkbenchOpen ? 'CAPTION WORKBENCH' : 'INSPECTOR'}</span><h2>{activeTab === 'subtitles' ? '字幕编辑' : activeTab === 'music' ? '配乐编排' : activeTab === 'settings' ? '画幅与声音' : '属性检查器'}</h2></div><button className="icon-button compact inspector-toggle" onClick={() => setInspectorCollapsed((collapsed) => !collapsed)} aria-label={inspectorCollapsed ? '展开检查器' : '收起检查器'} title={inspectorCollapsed ? '展开检查器' : '收起检查器'}>{inspectorCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}</button></div>{activeTab === 'subtitles' ? renderSubtitleInspector() : activeTab === 'music' ? renderMusicInspector() : activeTab === 'settings' ? renderProjectSettings() : renderClipInspector()}</aside>
   }
 
   function renderSubtitleInspector() {
@@ -2795,17 +2886,19 @@ function App() {
     const recognitionTitle = selectedSubtitleClips.length > 20
       ? '一次最多识别 20 段，请减少所选片段'
       : canRecognizeSelection ? '识别选中的音视频片段' : '请选择片段，或将播放指针移到片段内'
-    const statusLabel = whisperStatus.installing ? 'INSTALLING'
-      : whisperStatus.recognizing ? 'TRANSCRIBING'
-        : whisperStatus.ready ? 'READY' : 'OFFLINE'
     const recognizedPercentage = Math.round(whisperStatus.recognitionProgress || 0)
 
-    return <div className="inspector-scroll">
-      <div className="inspector-section subtitle-status-card">
-        <div className="section-kicker">
-          <span>01 / TRANSCRIBE</span>
-          <span className={`local-model-pill ${whisperStatus.ready ? 'connected' : ''}`}><span />{statusLabel}</span>
-        </div>
+    const showModelDetails = whisperStatus.installing || whisperStatus.recognizing || Boolean(whisperStatus.error) || subtitleModelExpanded || !whisperStatus.ready && !hasExistingCaptions
+    const modelControls = <div className="subtitle-model-container">
+      {!whisperStatus.installing && !whisperStatus.recognizing && <div className="subtitle-model-compact">
+        <span><i />Whisper {whisperStatus.ready ? '已就绪' : '未就绪'}</span>
+        {whisperStatus.ready ? <button disabled={subtitleBusy || !canRecognizeSelection} title={recognitionTitle} onClick={recognizeSpeech}><Sparkles size={13} />识别{selectedSubtitleClips.length > 1 ? ` ${selectedSubtitleClips.length} 段` : ''}</button>
+          : !showModelDetails && <button disabled={!whisperStatus.supported || subtitleBusy} onClick={installWhisper}><Download size={13} />安装</button>}
+        <button aria-expanded={subtitleModelExpanded} aria-label="字幕模型更多设置" onClick={() => setSubtitleModelExpanded((value) => !value)}><MoreHorizontal size={17} /></button>
+      </div>}
+      {showModelDetails && <div className="subtitle-model-details">
+      <div className="subtitle-status-card">
+        <div className="subtitle-model-overview">
         <div className="asr-title">
           <div className="asr-orbit"><Mic size={17} /><span>AI</span></div>
           <div>
@@ -2819,6 +2912,19 @@ function App() {
                   : whisperStatus.supported ? '多语言 Whisper small 尚未安装' : '字幕识别支持 Apple Silicon Mac'}</small>
           </div>
         </div>
+        <div className="subtitle-model-actions">
+          {!whisperStatus.ready && !whisperStatus.installing && <button className="subtitle-install-button"
+            disabled={!whisperStatus.supported || subtitleBusy || whisperStatus.recognizing}
+            onClick={installWhisper}>
+            <Download size={13} />{whisperStatus.modelPresent ? '修复 Whisper' : '安装 Whisper'}
+          </button>}
+          {whisperStatus.recognizing && <button onClick={() => void window.videome?.cancelWhisperRecognition?.()}>取消识别</button>}
+          {whisperStatus.ready && !whisperStatus.installing && !whisperStatus.recognizing && <button
+            disabled={subtitleBusy} onClick={installWhisper} title="重新校验或修复 Whisper 运行文件">
+            <RotateCw size={13} />修复
+          </button>}
+        </div>
+        </div>
         {whisperStatus.installing ? <>
           <div className="subtitle-model-progress">
             <div>
@@ -2830,38 +2936,20 @@ function App() {
             </div>
           </div>
           <button className="generate-subtitles subtitle-cancel-model" onClick={cancelWhisperInstall}>取消安装</button>
-        </> : <>
-          <div className="subtitle-model-actions">
-            {!whisperStatus.ready && <button className="subtitle-install-button"
-              disabled={!whisperStatus.supported || subtitleBusy || whisperStatus.recognizing || whisperStatus.installing}
-              onClick={installWhisper}>
-              <Download size={12} />{whisperStatus.modelPresent ? '修复 Whisper' : '安装 Whisper'}
-            </button>}
-            {whisperStatus.recognizing
-              ? <button className="subtitle-recognize-button" onClick={() => void window.videome?.cancelWhisperRecognition?.()}>取消识别</button>
-              : <button className="generate-subtitles subtitle-recognize-button"
-                disabled={!whisperStatus.ready || subtitleBusy || !canRecognizeSelection}
-                title={recognitionTitle} onClick={recognizeSpeech}>
-                <Sparkles size={14} />识别 {selectedSubtitleClips.length > 1 ? `${selectedSubtitleClips.length} 个片段` : '所选片段'}
-              </button>}
-            {whisperStatus.ready && <button className="subtitle-repair-button"
-              disabled={subtitleBusy || whisperStatus.recognizing || whisperStatus.installing}
-              onClick={installWhisper} title="重新校验或修复 Whisper 运行文件">
-              <RotateCw size={12} />修复
-            </button>}
-          </div>
-          {whisperStatus.recognizing && <div className="subtitle-recognition-progress">
+        </> : whisperStatus.recognizing && <div className="subtitle-recognition-progress">
             <span>{whisperStatus.stage || '正在本地识别'}</span>
             <span>{recognizedPercentage}%</span>
             <div className="dubbing-progress"><i style={{ width: `${Math.max(2, recognizedPercentage)}%` }} /></div>
           </div>}
-        </>}
         {whisperStatus.error && <p className="subtitle-model-error" role="alert">{whisperStatus.error}</p>}
-        <div className="subtitles-note">
+        <div className="subtitle-model-note">
+          <span className="subtitle-model-privacy">
           <LockKeyhole size={11} />
           <span>音频仅在本机处理 · 自动识别原语字幕</span>
+          </span>
           <span className="subtitle-selection-count">{selectionLabel}</span>
         </div>
+        <div className="subtitle-model-options">
         {hasExistingCaptions && <label className="subtitle-merge-option">
           <input type="checkbox" checked={mergeWhisperSubtitles} onChange={(event) => {
             const value = event.target.checked
@@ -2870,40 +2958,17 @@ function App() {
           }} />
           <span>保留并合并已有字幕</span>
         </label>}
-      </div>
-      <div className="inspector-section cues-section">
-        <div className="section-heading-row">
-          <div><span className="section-kicker">02 / CAPTIONS</span><span className="subsection-title">字幕行</span></div>
-          <span className="cue-count">{project.subtitle.cues.length} 行</span>
-        </div>
-        <div className="subtitle-list">{project.subtitle.cues.map((cue, index) => <div
-          className={`subtitle-row ${selectedCueId === cue.id ? 'cue-selected' : ''}`} key={cue.id}
-          onClick={() => handleSubtitleCueSelection(cue)}>
-          <span className="cue-number">{String(index + 1).padStart(2, '0')}</span>
-          <div className="cue-fields">
-            <div className="cue-time-fields">
-              <input className="cue-time" value={formatCompactTime(cue.start)} aria-label="字幕起始时间"
-                onChange={(event) => { const time = parseClock(event.target.value, cue.start); setSubtitleCue(cue.id, { start: time, end: Math.max(time + 0.2, cue.end) }) }} onClick={(event) => event.stopPropagation()} />
-              <span>→</span>
-              <input className="cue-time" value={formatCompactTime(cue.end)} aria-label="字幕结束时间"
-                onChange={(event) => { const time = parseClock(event.target.value, cue.end); setSubtitleCue(cue.id, { end: Math.max(cue.start + 0.2, time) }) }} onClick={(event) => event.stopPropagation()} />
-              <button aria-label="删除字幕行" title="删除字幕行" onClick={(event) => { event.stopPropagation(); removeSubtitleCue(cue) }}><X size={11} /></button>
-            </div>
-            <textarea value={cue.text} rows={1} aria-label="字幕内容" onClick={(event) => event.stopPropagation()}
-              onChange={(event) => { setSubtitleCue(cue.id, { text: event.target.value }); event.target.style.height = 'auto'; event.target.style.height = `${event.target.scrollHeight}px` }} />
-          </div>
-          <span className="cue-duration">{cueToEnd(cue)}s</span>
-        </div>)}</div>
-        <button className="add-caption" onClick={() => {
-          const cue = { id: `caption-${Date.now()}`, start: Math.min(duration - 0.5, project.playhead), end: Math.min(duration, project.playhead + 3), text: '新增字幕', edited: true }
-          applyEdit('添加字幕', (current) => ({ ...current, subtitle: { ...current.subtitle, enabled: true, cues: [...current.subtitle.cues, cue] }, clips: [...current.clips, addSubtitleClip(cue)] }))
-          setSelectedCueId(cue.id); setStatus('已添加字幕行；导出前可校准起止时间。')
-        }}><Plus size={12} />添加字幕行</button>
-        <div className="subtitle-bulk-actions">
-          <button onClick={importSubtitleFile}><FolderOpen size={12} />导入 SRT</button>
-          <button onClick={exportSrt}><Download size={12} />导出 SRT</button>
+        <button className="subtitle-network-link" onClick={() => { setShowDubbing(true); setDubbingSettingsRequested(true) }}><Settings2 size={13} />安装网络与代理</button>
         </div>
       </div>
+      </div>}
+    </div>
+    return <SubtitleEditor key={project.projectId} cues={subtitleTimelineCues} selectedCueId={selectedCueId} activeCueId={selectedSubtitle?.id}
+      playhead={project.playhead} playing={playing} auditionCueId={subtitleAuditionId}
+      workbench={subtitleWorkbenchOpen} onWorkbench={openSubtitleWorkbench} onCollapse={() => setInspectorCollapsed(true)} onSelect={handleSubtitleCueSelection}
+      onChange={setSubtitleCue} onDelete={removeSubtitleCue} onPlay={toggleSubtitleAudition}
+      onAdd={addManualSubtitle} onImport={importSubtitleFile} onExport={exportSrt} onUndo={handleUndo} canUndo={Boolean(editHistory.length)}
+      recognitionNotice={subtitleRecognitionNotice} modelControls={modelControls} styleControls={
       <div className="inspector-section style-section">
         <div className="section-kicker">03 / STYLE</div>
         <div className="mini-field-row"><span>字幕样式</span><div className="setting-readonly">经典 · 白字描边 <ChevronDown size={11} /></div></div>
@@ -2918,7 +2983,7 @@ function App() {
             onClick={() => applyEdit('切换字幕背景', (current) => ({ ...current, subtitle: { ...current.subtitle, background: !current.subtitle.background } }))}><i /></button>
         </div>
       </div>
-    </div>
+      } />
   }
 
   function renderMusicInspector() {
@@ -2993,7 +3058,7 @@ function App() {
   }
 
   function renderCaptionInspector() {
-    const cue = project.subtitle.cues.find((item) => item.id === selectedClip.sourceCueId)
+    const cue = subtitleTimelineCues.find((item) => item.clipId === selectedClip.id)
     return <div className="inspector-scroll"><div className="inspector-section"><div className="section-kicker">01 / CAPTION</div><h3 className="setting-title">字幕时间线片段</h3>{cue ? <div className="graphic-text-field"><span>字幕内容</span><textarea rows={3} value={cue.text} onChange={(event) => setSubtitleCue(cue.id, { text: event.target.value })} /></div> : <p className="empty-caption-state">此字幕片段来自导入的图文；可直接在时间轴中移动或裁切。</p>}<div className="mini-field-row"><span>时长</span><div className="setting-readonly">{selectedClip.duration.toFixed(2)} 秒 <Info size={11} /></div></div><label className="toggle-row"><span>全局字幕可见</span><button className={`switch ${project.subtitle.enabled ? 'switch-on' : ''}`} role="switch" aria-checked={project.subtitle.enabled} aria-label="显示字幕" onClick={() => updateProject((current) => ({ ...current, subtitle: { ...current.subtitle, enabled: !current.subtitle.enabled } }), '切换字幕显示')}><i /></button></label></div><div className="inspector-note"><Info size={12} /><span>渲染前可在检查器修改字幕，字幕导出与时间线位置保持一致。</span></div></div>
   }
 
@@ -3064,13 +3129,13 @@ function App() {
   }
 
   const timelineShell = (
-    <div className="editor-shell">
+    <div className={`editor-shell ${activeTab === 'subtitles' ? 'subtitle-layout' : ''} ${subtitleWorkbenchOpen ? 'subtitle-workbench-open' : ''}`}>
       {renderHeader()}
       {renderLeftRail()}
       {renderMediaLibrary()}
       <main className="editor-main">
         {renderEditorToolbar()}
-        <div className={`workspace-grid ${inspectorCollapsed ? 'workspace-inspector-collapsed' : ''}`}>
+        <div ref={workspaceRef} style={{ '--subtitle-panel-width': `${subtitlePanelWidth}px` }} className={`workspace-grid ${activeTab === 'subtitles' ? 'workspace-subtitles' : ''} ${subtitleWorkbenchOpen ? 'workspace-subtitle-workbench' : ''} ${inspectorCollapsed ? 'workspace-inspector-collapsed' : ''}`}>
           {renderVideoPanel()}
           {renderRightInspector()}
         </div>
@@ -3085,7 +3150,7 @@ function App() {
       {renderTimelineMenu()}
       {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
-      {showDubbing && <DubbingPanel currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job, options) => { void applyDubbingJob(job, options) }} onClose={() => setShowDubbing(false)} />}
+      {showDubbing && <DubbingPanel initialSettingsOpen={dubbingSettingsRequested} currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job, options) => { void applyDubbingJob(job, options) }} onClose={() => { setShowDubbing(false); setDubbingSettingsRequested(false) }} />}
       {renderRelinkDialog()}
       {renderProgress()}
       {renderSubtitleBusy()}
@@ -3569,7 +3634,7 @@ function hydrateProject(project) {
     clips: repairSplitAudioDuplicates(Array.isArray(source.clips) ? source.clips : []),
     assets,
   }
-  return repairDubbingPlaybackState(hydrated)
+  return refreshSubtitleClipText(repairDubbingPlaybackState(hydrated))
 }
 
 function normalizeProjectForPersistence(project) {
