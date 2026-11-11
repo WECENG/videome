@@ -62,4 +62,15 @@ describe('batch mix deterministic planning', () => {
       expect(items.at(-1).index).toBe(count)
     }
   })
+
+  it('normalizes shared background audio and adds it to representative projects', async () => {
+    const options = normalizeOptions({ count: 1, targetSeconds: 4, backgroundAudio: { path: '/music.wav', name: 'Morning', mixMode: 'replace', volume: 0.22, fadeOut: 1.5 } })
+    expect(options.backgroundAudio).toMatchObject({ path: '/music.wav', name: 'Morning', mixMode: 'replace', volume: 0.22, lengthMode: 'loop', fadeOut: 1.5, ducking: 'auto' })
+    const [item] = await planOutputs(planSegments(20, options), options)
+    const project = buildRepresentativeProject({ id: 'job', source: { path: '/source.mp4', name: 'source.mp4', duration: 20, videoOffset: 0, sha256: 'abc', width: 320, height: 180, codec: 'h264', audio: { offset: 0, containerOffset: 0, duration: 20, codec: 'aac' } }, options }, item)
+    expect(project.tracks.find((track) => track.id === 'audio-music')).toMatchObject({ muted: false })
+    expect(project.tracks.find((track) => track.id === 'audio-dialogue')).toMatchObject({ muted: true })
+    expect(project.assets.some((asset) => asset.path === '/music.wav')).toBe(true)
+    expect(project.clips.find((clip) => clip.isMusic)).toMatchObject({ volume: 0.22, fadeOut: 1.5, repeat: false })
+  })
 })

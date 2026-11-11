@@ -4,6 +4,28 @@ const ALGORITHM_VERSION = 1
 const FRAME_RATES = [24, 25, 30, 50, 60]
 const roundTime = (value) => Math.round(value * 1e6) / 1e6
 
+function normalizeBackgroundAudio(input, targetSeconds) {
+  if (input == null || input === '') return null
+  if (typeof input !== 'object') throw new Error('背景音乐配置无效。')
+  const path = String(input.path || '').trim()
+  if (!path) throw new Error('背景音乐路径不能为空。')
+  const volume = Number(input.volume ?? 0.22)
+  const mixMode = input.mixMode == null ? 'mix' : String(input.mixMode)
+  const lengthMode = input.lengthMode == null ? 'loop' : String(input.lengthMode)
+  const fadeOut = Number(input.fadeOut ?? 1.5)
+  const start = Number(input.start ?? 0)
+  if (!Number.isFinite(volume) || volume < 0 || volume > 1) throw new Error('背景音乐音量必须在 0–1 之间。')
+  if (!['mix', 'replace'].includes(mixMode)) throw new Error('背景音乐策略必须为混合或替换。')
+  if (lengthMode !== 'loop') throw new Error('背景音乐长度策略仅支持循环铺满。')
+  if (!Number.isFinite(start) || start < 0) throw new Error('背景音乐起点无效。')
+  if (!Number.isFinite(fadeOut) || fadeOut < 0 || fadeOut > targetSeconds) throw new Error('背景音乐淡出时长不能超过成片时长。')
+  return { path, name: String(input.name || path.split(/[\\/]/).pop() || '背景音乐'), volume, mixMode, start, lengthMode, fadeOut, ducking: input.ducking == null ? 'auto' : String(input.ducking),
+    ...(Number.isFinite(Number(input.duration)) ? { duration: Number(input.duration) } : {}),
+    ...(input.sha256 ? { sha256: String(input.sha256) } : {}),
+    ...(Number.isFinite(Number(input.size)) ? { size: Number(input.size) } : {}),
+    ...(Number.isFinite(Number(input.mtimeMs)) ? { mtimeMs: Number(input.mtimeMs) } : {}) }
+}
+
 function normalizeOptions(input = {}) {
   const segmentSeconds = Number(input.segmentSeconds ?? 3)
   const targetSeconds = Number(input.targetSeconds ?? 30)
@@ -25,9 +47,10 @@ function normalizeOptions(input = {}) {
   if (!Number.isFinite(videoBitrateMbps) || videoBitrateMbps < 1 || videoBitrateMbps > 100) throw new Error('视频码率必须为 1–100 Mbps。')
   if (!seed || seed.length > 200) throw new Error('随机种子不能为空，且不能超过 200 字符。')
   const targetFrames = Math.round(targetSeconds * fps)
+  const backgroundAudio = normalizeBackgroundAudio(input.backgroundAudio, targetSeconds)
   return { segmentSeconds, targetSeconds, count, fps, concurrency, width, height, threshold, videoBitrateMbps, seed,
     alignScenes: input.alignScenes !== false, targetFrames, actualSeconds: targetFrames / fps,
-    snapWindow: Math.min(1, Math.max(0.25, segmentSeconds * 0.25)) }
+    snapWindow: Math.min(1, Math.max(0.25, segmentSeconds * 0.25)), backgroundAudio }
 }
 
 function planSegments(duration, options, sceneCuts = []) {
@@ -135,6 +158,8 @@ function automaticConcurrency(source, options, hardware) {
 }
 
 function estimateBytes(options, count = options.count) {
+  // Keep the conservative legacy estimate for source-audio-only jobs; music
+  // jobs use the same AAC output budget after mixing.
   return Math.ceil(count * options.actualSeconds * (options.videoBitrateMbps * 1e6 + 256000) / 8)
 }
 
@@ -143,7 +168,8 @@ function buildRepresentativeProject(job, item) {
   const options = job.options
   const assetId = `batch-source-${source.sha256.slice(0, 16)}`
   const tracks = [{ id: 'video-main', type: 'video', label: '混剪视频', accent: 'lime', order: 0, locked: false, muted: false }]
-  if (source.audio) tracks.push({ id: 'audio-dialogue', type: 'audio', label: '原声 · 配音', accent: 'cyan', order: 0, locked: false, muted: false })
+  if (source.audio) tracks.push({ id: 'audio-dialogue', type: 'audio', label: '原声 · 配音', accent: 'cyan', order: 0, locked: false, muted: options.backgroundAudio?.mixMode === 'replace' })
+  if (options.backgroundAudio) tracks.push({ id: 'audio-music', type: 'audio', label: '背景音乐', accent: 'blue', order: 1, locked: false, muted: false })
   let positionFrames = 0
   const clips = []
   for (const [index, part] of item.sequence.entries()) {
@@ -164,14 +190,26 @@ function buildRepresentativeProject(job, item) {
     }
     positionFrames += part.frames
   }
+  if (options.backgroundAudio) {
+    const background = options.backgroundAudio
+    const musicAssetId = `batch-music-${(background.sha256 || crypto.createHash('sha256').update(background.path).digest('hex')).slice(0, 16)}`
+    clips.push({ id: `music-${item.index}`, kind: 'audio', assetId: musicAssetId, trackId: 'audio-music', name: `${background.name} · 批量背景音乐`, start: 0,
+      duration: options.actualSeconds, trimStart: background.start || 0, trimEnd: (background.start || 0) + Math.min(options.actualSeconds, Number(background.duration) || options.actualSeconds),
+      sourceDuration: Number(background.duration) || options.actualSeconds, color: 'blue', volume: background.volume, isMusic: true, fadeOut: background.fadeOut,
+      autoDuck: background.ducking === 'auto', repeat: background.lengthMode === 'loop' && Number(background.duration) > 0 && options.actualSeconds > Number(background.duration) })
+  }
+  const assets = [{ id: assetId, path: source.path, name: source.name, kind: 'video', duration: source.duration + source.videoOffset,
+    sourceDuration: source.duration + source.videoOffset, width: source.width, height: source.height, rotation: 0,
+    videoCodec: source.codec, audioCodec: source.audio?.codec || null, batchMixSource: true }]
+  if (options.backgroundAudio) assets.push({ id: `batch-music-${(options.backgroundAudio.sha256 || crypto.createHash('sha256').update(options.backgroundAudio.path).digest('hex')).slice(0, 16)}`,
+    path: options.backgroundAudio.path, name: options.backgroundAudio.name, kind: 'audio', duration: Number(options.backgroundAudio.duration) || options.actualSeconds,
+    sourceDuration: Number(options.backgroundAudio.duration) || options.actualSeconds, audioCodec: options.backgroundAudio.codec || null, batchMixBackground: true })
   return { schemaVersion: 1, name: `混剪-${job.id.slice(0, 8)}-${String(item.index).padStart(4, '0')}`, duration: options.actualSeconds, playhead: 0,
     frameSize: { width: options.width, height: options.height }, frameRate: { numerator: options.fps, denominator: 1 },
     profile: `${options.width}×${options.height} · ${options.fps} fps`, tracks, clips,
-    assets: [{ id: assetId, path: source.path, name: source.name, kind: 'video', duration: source.duration + source.videoOffset,
-      sourceDuration: source.duration + source.videoOffset, width: source.width, height: source.height, rotation: 0,
-      videoCodec: source.codec, audioCodec: source.audio?.codec || null, batchMixSource: true }],
+    assets,
     subtitle: { enabled: false, cues: [] }, exportSettings: { preset: 'high', format: 'mp4', videoCodec: 'h264', videoBitrateMbps: options.videoBitrateMbps, audioBitrateKbps: 256 },
     batchMix: { jobId: job.id, index: item.index, signature: item.signature }, history: [] }
 }
 
-module.exports = { ALGORITHM_VERSION, normalizeOptions, planSegments, planOutputs, makeSequence, randomFor, sequenceSignature, estimateBytes, automaticConcurrency, buildRepresentativeProject }
+module.exports = { ALGORITHM_VERSION, normalizeOptions, normalizeBackgroundAudio, planSegments, planOutputs, makeSequence, randomFor, sequenceSignature, estimateBytes, automaticConcurrency, buildRepresentativeProject }

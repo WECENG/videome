@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('videome', {
   exportMedia: (payload) => ipcRenderer.invoke('videome:export', payload),
   cancelExport: () => ipcRenderer.invoke('videome:cancel-export'),
   openPreview: (asset) => ipcRenderer.invoke('videome:open-preview', asset),
+  closePreviewWindow: () => ipcRenderer.invoke('videome:close-preview-window'),
   dubbingModels: () => ipcRenderer.invoke('videome:dubbing-models'),
   dubbingNetworkSettings: () => ipcRenderer.invoke('videome:dubbing-network'),
   saveDubbingNetworkSettings: (settings) => ipcRenderer.invoke('videome:dubbing-save-network', settings),
@@ -66,6 +67,7 @@ contextBridge.exposeInMainWorld('videome', {
   },
   pickBatchOutputDirectory: () => ipcRenderer.invoke('videome:batch-pick-directory'),
   createBatchMixAnalysis: (payload) => ipcRenderer.invoke('videome:batch-analyze', payload),
+  probeBatchAudio: (filePath) => ipcRenderer.invoke('videome:batch-probe-audio', filePath),
   getBatchMixJob: (id) => ipcRenderer.invoke('videome:batch-get', id),
   listBatchMixJobs: () => ipcRenderer.invoke('videome:batch-list'),
   startBatchMix: (id) => ipcRenderer.invoke('videome:batch-start', id),
@@ -91,6 +93,11 @@ contextBridge.exposeInMainWorld('videome', {
     const handler = (_event, payload) => callback(payload)
     ipcRenderer.on('videome:preview-event', handler)
     return () => ipcRenderer.removeListener('videome:preview-event', handler)
+  },
+  onPreviewClosed(callback) {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('videome:preview-closed', handler)
+    return () => ipcRenderer.removeListener('videome:preview-closed', handler)
   },
   onOpenProjectFile(callback) {
     openProjectListeners.add(callback)

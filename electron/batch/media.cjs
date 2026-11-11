@@ -119,14 +119,15 @@ async function analyzeScenes(ffmpeg, source, options, context) {
 function buildArguments(source, sequence, options, output, encoder) {
   const args = ['-hide_banner', '-nostdin', '-y', '-v', 'error', '-progress', 'pipe:1', '-stats_period', '0.25', '-filter_complex_threads', '1']
   const filters = []
-  const labels = []
+  const videoLabels = []
+  const audioLabels = []
   let input = 0
   for (const [index, clip] of sequence.entries()) {
     const duration = clip.frames / options.fps
     const videoInput = input++
     args.push('-threads', '1', '-ss', String(source.videoOffset + clip.sourceStart), '-t', String(duration + 1 / options.fps), '-i', source.path)
     filters.push(`[${videoInput}:${source.videoStream}]setpts=PTS-STARTPTS,fps=${options.fps},scale=${options.width}:${options.height}:force_original_aspect_ratio=decrease,pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=${1 / options.fps},trim=end_frame=${clip.frames},setpts=N/(${options.fps}*TB)[v${index}]`)
-    labels.push(`[v${index}]`)
+    videoLabels.push(`[v${index}]`)
     if (source.audio) {
       const availableStart = Math.max(clip.sourceStart, source.audio.offset)
       const availableEnd = Math.min(clip.sourceStart + duration, source.audio.offset + source.audio.duration)
@@ -137,12 +138,25 @@ function buildArguments(source, sequence, options, output, encoder) {
         const delay = Math.round((availableStart - clip.sourceStart) * 48000)
         filters.push(`[${audioInput}:${source.audio.stream}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB,adelay=${delay}S:all=1,apad,atrim=end_sample=${samples},asetpts=N/SR/TB[a${index}]`)
       } else filters.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${samples},asetpts=N/SR/TB[a${index}]`)
-      labels.push(`[a${index}]`)
+      audioLabels.push(`[a${index}]`)
     }
   }
-  filters.push(`${labels.join('')}concat=n=${sequence.length}:v=1:a=${source.audio ? 1 : 0}[video]${source.audio ? '[audio]' : ''}`)
+  const hasBackground = Boolean(options.backgroundAudio?.path)
+  const concatLabels = sequence.flatMap((_clip, index) => source.audio ? [`[v${index}]`, `[a${index}]`] : [`[v${index}]`])
+  filters.push(`${concatLabels.join('')}concat=n=${sequence.length}:v=1:a=${source.audio ? 1 : 0}[video]${source.audio ? '[sourceAudio]' : ''}`)
+  if (hasBackground) {
+    const backgroundInput = input++
+    args.push('-stream_loop', '-1', '-ss', String(options.backgroundAudio.start || 0), '-i', options.backgroundAudio.path)
+    const musicTail = Math.max(0, options.actualSeconds - Number(options.backgroundAudio.fadeOut || 0))
+    const fade = Number(options.backgroundAudio.fadeOut || 0) > 0 ? `,afade=t=out:st=${musicTail}:d=${Number(options.backgroundAudio.fadeOut)}` : ''
+    const musicBase = `[${backgroundInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB,volume=${Number(options.backgroundAudio.volume ?? 0.22)},atrim=duration=${options.actualSeconds},asetpts=N/SR/TB${fade}`
+    if (options.backgroundAudio.mixMode === 'replace' || !source.audio) filters.push(`${musicBase}[audio]`)
+    else if (options.backgroundAudio.ducking === 'auto') filters.push(`${musicBase}[music]`, '[sourceAudio]asplit=2[sourceSidechain][sourceMix]', '[music][sourceSidechain]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=300[ducked]', `[sourceMix][ducked]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${options.actualSeconds},asetpts=N/SR/TB[audio]`)
+    else filters.push(`${musicBase}[music]`, `[sourceAudio][music]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${options.actualSeconds},asetpts=N/SR/TB[audio]`)
+  }
   args.push('-filter_complex', filters.join(';'), '-map', '[video]')
-  if (source.audio) args.push('-map', '[audio]', '-c:a', 'aac', '-ar', '48000', '-b:a', '256k')
+  if (hasBackground) args.push('-map', '[audio]', '-c:a', 'aac', '-ar', '48000', '-b:a', '256k')
+  else if (source.audio) args.push('-map', '[sourceAudio]', '-c:a', 'aac', '-ar', '48000', '-b:a', '256k')
   else args.push('-an')
   args.push('-c:v', encoder, '-threads:v', '2', '-pix_fmt', 'yuv420p', '-b:v', `${options.videoBitrateMbps}M`)
   if (encoder === 'libx264') args.push('-preset', 'fast')

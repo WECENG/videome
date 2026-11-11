@@ -108,6 +108,14 @@ class BatchMixManager extends EventEmitter {
     if (process.platform === 'win32' && base.startsWith('\\\\')) throw new Error('首版批量输出请使用本地 NTFS 目录。')
     await checkOutputDirectory(base)
     const sourcePath = await fs.realpath(input.sourcePath)
+    if (options.backgroundAudio) {
+      const backgroundPath = await fs.realpath(options.backgroundAudio.path).catch(() => null)
+      if (!backgroundPath) throw new Error('背景音乐不存在或无法读取。')
+      const backgroundStat = await fs.stat(backgroundPath)
+      if (!backgroundStat.isFile()) throw new Error('背景音乐路径必须为文件。')
+      const backgroundDigest = await this.engine.fingerprint(backgroundPath)
+      options.backgroundAudio = { ...options.backgroundAudio, path: backgroundPath, ...backgroundDigest }
+    }
     const id = crypto.randomUUID()
     const outputDirectory = path.join(base, `Videome-${new Date().toISOString().replace(/[:.]/g, '-')}-${id.slice(0, 8)}`)
     await fs.mkdir(outputDirectory, { recursive: false })
@@ -136,6 +144,16 @@ class BatchMixManager extends EventEmitter {
       const digest = await this.engine.fingerprint(job.sourcePath, context.signal)
       const metadata = await this.engine.probe(this.ffprobe, job.sourcePath, context)
       job.source = { ...this.engine.sourceFromProbe(job.sourcePath, metadata), ...digest }
+      if (job.options.backgroundAudio) {
+        job.phase = 'probe'
+        this.notify(job)
+        const backgroundMetadata = await this.engine.probe(this.ffprobe, job.options.backgroundAudio.path, context)
+        const backgroundStream = backgroundMetadata.streams?.find((stream) => stream.codec_type === 'audio')
+        if (!backgroundStream) throw new Error('背景音乐没有可用的音频流。')
+        const duration = Number(backgroundStream.duration) || Number(backgroundStream.duration_ts) * (Number(String(backgroundStream.time_base || '0').split('/')[0]) / Number(String(backgroundStream.time_base || '1').split('/')[1] || 1)) || Number(backgroundMetadata.format?.duration)
+        if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取背景音乐时长。')
+        job.options.backgroundAudio = { ...job.options.backgroundAudio, duration, codec: backgroundStream.codec_name }
+      }
       job.ffmpegVersion = (await this.engine.run(this.ffmpeg, ['-version'], context)).stdout.split('\n')[0]
       let cuts = []
       if (job.options.alignScenes) {
@@ -224,6 +242,10 @@ class BatchMixManager extends EventEmitter {
     job.error = null
     const digest = await this.engine.fingerprint(job.source.path, context.signal)
     if (digest.sha256 !== job.source.sha256) throw new Error('源文件内容已变化，请重新分析。')
+    if (job.options.backgroundAudio) {
+      const backgroundDigest = await this.engine.fingerprint(job.options.backgroundAudio.path, context.signal)
+      if (backgroundDigest.sha256 !== job.options.backgroundAudio.sha256) throw new Error('背景音乐内容已变化，请重新定位后继续。')
+    }
     job.source.mtimeMs = digest.mtimeMs
     job.source.size = digest.size
     await this.save(job)
@@ -273,7 +295,7 @@ class BatchMixManager extends EventEmitter {
       item.percent = 99
       await this.save(job)
       await this.hooks.beforeVerify?.(job, item)
-      item.verification = await this.engine.verify(this.ffmpeg, this.ffprobe, partial, job.options, Boolean(job.source.audio), context)
+      item.verification = await this.engine.verify(this.ffmpeg, this.ffprobe, partial, job.options, Boolean(job.source.audio || job.options.backgroundAudio), context)
       context.signal.throwIfAborted()
       const afterStat = await fs.stat(job.source.path)
       if (afterStat.size !== job.source.size || afterStat.mtimeMs !== job.source.mtimeMs) throw Object.assign(new Error('编码期间源文件发生变化。'), { code: 'EIO' })
@@ -330,7 +352,7 @@ class BatchMixManager extends EventEmitter {
     })
   }
 
-  async resume(id, { failedOnly = false, sourcePath } = {}) {
+  async resume(id, { failedOnly = false, sourcePath, backgroundAudioPath } = {}) {
     return this.change(async () => {
       const job = this.requireJob(id)
       if (!['paused', 'cancelled', 'interrupted', 'partial_failed', 'completed'].includes(job.status) || !job.items.length) throw new Error('当前批次无法恢复，请重新分析。')
@@ -349,6 +371,13 @@ class BatchMixManager extends EventEmitter {
         job.source.path = candidate
         job.sourcePath = candidate
         job.source.mtimeMs = digest.mtimeMs
+        if (job.options.backgroundAudio) {
+          const backgroundCandidate = await fs.realpath(backgroundAudioPath || job.options.backgroundAudio.path).catch(() => null)
+          if (!backgroundCandidate) throw new Error('背景音乐不存在，请重新定位后继续。')
+          const backgroundDigest = await this.engine.fingerprint(backgroundCandidate, this.context(job).signal)
+          if (backgroundDigest.sha256 !== job.options.backgroundAudio.sha256) throw new Error('背景音乐内容已变化，请重新定位后继续。')
+          job.options.backgroundAudio = { ...job.options.backgroundAudio, path: backgroundCandidate, ...backgroundDigest }
+        }
         job.source.size = digest.size
         for (const item of job.items) {
           this.context(job).signal.throwIfAborted()
@@ -358,7 +387,7 @@ class BatchMixManager extends EventEmitter {
               const outputDigest = await this.engine.fingerprint(item.outputPath, this.context(job).signal)
               if (outputDigest.sha256 !== item.verification.sha256) throw new Error(`输出 ${item.index} 内容发生变化，已保留该文件，请移动冲突文件后恢复。`)
             } else if (['rendering', 'verifying', 'publishing'].includes(item.status)) {
-              item.verification = await this.engine.verify(this.ffmpeg, this.ffprobe, item.outputPath, job.options, Boolean(job.source.audio), this.context(job))
+              item.verification = await this.engine.verify(this.ffmpeg, this.ffprobe, item.outputPath, job.options, Boolean(job.source.audio || job.options.backgroundAudio), this.context(job))
             } else throw new Error(`输出 ${item.index} 已有同名文件，已停止以避免覆盖。`)
             item.status = 'completed'
             item.percent = 100

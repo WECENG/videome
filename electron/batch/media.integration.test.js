@@ -26,6 +26,11 @@ async function pixel(filePath, time) {
   return Number(stdout.match(/lavfi.signalstats.YAVG=(\S+)/)?.[1])
 }
 
+async function rms(filePath, time) {
+  const { stdout } = await media.run(ffmpeg, ['-v', 'error', '-ss', String(time), '-t', '0.2', '-i', filePath, '-af', 'astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-', '-f', 'null', '-'])
+  return Number(stdout.match(/lavfi\.astats\.Overall\.RMS_level=([^\n]+)/)?.[1])
+}
+
 describe('batch mix media correctness', () => {
   it('reports signal-terminated subprocesses as failures', async () => {
     await expect(media.run(process.execPath, ['-e', 'process.kill(process.pid, "SIGKILL")'])).rejects.toThrow('媒体进程退出')
@@ -65,6 +70,30 @@ describe('batch mix media correctness', () => {
     const silent = path.join(folder, 'silent.mp4')
     await media.render(ffmpeg, { ...source, audio: null }, { sequence }, options, silent)
     expect((await media.verify(ffmpeg, ffprobe, silent, options, false)).audioDuration).toBeNull()
+  }, 30000)
+
+  it('loops, mixes, and fades a shared background track from its start', async () => {
+    const music = path.join(folder, 'shared-background.wav')
+    await media.run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=0.5', '-c:a', 'pcm_s16le', music])
+    const options = normalizeOptions({ count: 1, targetSeconds: 2, width: 320, height: 180, backgroundAudio: { path: music, name: 'shared', duration: 0.5, volume: 0.22, mixMode: 'mix', fadeOut: 0.5 } })
+    const output = path.join(folder, 'shared-music.mp4')
+    await media.render(ffmpeg, source, { sequence: [{ sourceStart: 0, sourceEnd: 2, frames: 60 }] }, options, output)
+    const result = await media.verify(ffmpeg, ffprobe, output, options, true)
+    expect(result.audioDuration).toBeCloseTo(2, 2)
+    const metadata = await media.probe(ffprobe, output)
+    expect(metadata.streams.filter((stream) => stream.codec_type === 'audio')).toHaveLength(1)
+  }, 30000)
+
+  it('keeps source audio audible after the first concatenated clip when ducking music', async () => {
+    const music = path.join(folder, 'ducking-background.wav')
+    await media.run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=0.5', '-c:a', 'pcm_s16le', music])
+    const options = normalizeOptions({ count: 1, targetSeconds: 4, width: 320, height: 180, backgroundAudio: { path: music, name: 'ducking', duration: 0.5, volume: 0.22, mixMode: 'mix', fadeOut: 0.5 } })
+    const output = path.join(folder, 'ducking-music.mp4')
+    const sequence = [0, 1, 0, 1].map((sourceStart) => ({ sourceStart, sourceEnd: sourceStart + 1, frames: 30 }))
+    await media.render(ffmpeg, source, { sequence }, options, output)
+    expect(await rms(output, 0.5)).toBeLessThan(-18)
+    expect(await rms(output, 3.5)).toBeLessThan(-18)
+    expect(Math.abs((await rms(output, 0.5)) - (await rms(output, 3.5)))).toBeLessThan(5)
   }, 30000)
 
   it('retries a hardware initialization failure once with a valid software output', async () => {

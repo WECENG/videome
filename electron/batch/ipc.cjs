@@ -15,13 +15,35 @@ function registerBatchMixIpc({ ipcMain, app, dialog, shell, manager, authorize, 
   handle('analyze', async (service, payload) => {
     const sourcePath = await authorize(payload?.sourcePath)
     if (!sourcePath) throw new Error('源视频不存在或无法读取。')
-    return { ok: true, ...await service.create({ ...payload, sourcePath }) }
+    let backgroundAudio = payload?.backgroundAudio
+    if (backgroundAudio?.path) {
+      const backgroundPath = await authorize(backgroundAudio.path)
+      if (!backgroundPath) throw new Error('背景音乐不存在或无法读取。')
+      backgroundAudio = { ...backgroundAudio, path: backgroundPath }
+    }
+    return { ok: true, ...await service.create({ ...payload, sourcePath, backgroundAudio }) }
+  })
+  handle('probe-audio', async (service, rawPath) => {
+    const audioPath = await authorize(rawPath)
+    if (!audioPath) throw new Error('背景音乐不存在或无法读取。')
+    const metadata = await service.engine.probe(service.ffprobe, audioPath)
+    const stream = metadata.streams?.find((item) => item.codec_type === 'audio')
+    if (!stream) throw new Error('所选文件没有可用的音频流。')
+    const rate = (value) => { const [numerator, denominator = 1] = String(value || '0').split('/').map(Number); return denominator ? numerator / denominator : 0 }
+    const duration = Number(stream.duration) || Number(stream.duration_ts) * rate(stream.time_base) || Number(metadata.format?.duration)
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('无法读取背景音乐时长。')
+    const fingerprint = await service.engine.fingerprint(audioPath)
+    return { ok: true, path: audioPath, name: path.basename(audioPath), duration, codec: stream.codec_name, sampleRate: Number(stream.sample_rate) || null, channels: Number(stream.channels) || null, ...fingerprint }
   })
   handle('get', (service, id) => service.get(id))
   handle('list', (service) => service.list())
   handle('start', (service, id) => service.start(id))
   handle('pause', (service, id) => service.pause(id))
-  handle('resume', (service, payload) => service.resume(payload.jobId, { sourcePath: payload.sourcePath }))
+  handle('resume', async (service, payload) => {
+    let backgroundAudioPath = payload?.backgroundAudioPath
+    if (backgroundAudioPath) backgroundAudioPath = await authorize(backgroundAudioPath)
+    return service.resume(payload.jobId, { sourcePath: payload.sourcePath, backgroundAudioPath })
+  })
   handle('retry', (service, id) => service.resume(id, { failedOnly: true }))
   handle('cancel', (service, id) => service.cancel(id))
   handle('remove', (service, id) => service.remove(id))

@@ -271,6 +271,15 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!window.videome?.onPreviewClosed) return undefined
+    return window.videome.onPreviewClosed(() => {
+      setPreviewFullscreen(false)
+      setPreviewSeeking(false)
+      setStatus('预览窗口已关闭。', 'info')
+    })
+  }, [])
+
+  useEffect(() => {
     const viewport = timelineRef.current
     if (!viewport) return undefined
     const updateWidth = () => {
