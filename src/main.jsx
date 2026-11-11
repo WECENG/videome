@@ -271,15 +271,6 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!window.videome?.onPreviewClosed) return undefined
-    return window.videome.onPreviewClosed(() => {
-      setPreviewFullscreen(false)
-      setPreviewSeeking(false)
-      setStatus('预览窗口已关闭。', 'info')
-    })
-  }, [])
-
-  useEffect(() => {
     const viewport = timelineRef.current
     if (!viewport) return undefined
     const updateWidth = () => {
@@ -449,7 +440,7 @@ function App() {
   }, [showProjectLocation])
 
   useEffect(() => {
-    const audioAssets = assets.filter((asset) => asset.kind === 'audio')
+    const audioAssets = assets.filter((asset) => asset.kind === 'audio' && !asset.dubbingSource)
     setMusicFiles((current) => audioAssets.map((asset) => ({
       id: asset.id, name: asset.name, artist: '本地导入',
       mood: 'versatile', tempo: 'flexible', genre: '本地音乐', license: null, volume: 0.22,

@@ -96,6 +96,30 @@ describe('batch mix media correctness', () => {
     expect(Math.abs((await rms(output, 0.5)) - (await rms(output, 3.5)))).toBeLessThan(5)
   }, 30000)
 
+  it('does not trust a truncated probed audio duration when mixing later source segments', async () => {
+    const music = path.join(folder, 'truncated-probe-background.wav')
+    await media.run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=0.5', '-c:a', 'pcm_s16le', music])
+    const options = normalizeOptions({ count: 1, targetSeconds: 4, width: 320, height: 180, backgroundAudio: { path: music, name: 'truncated-probe', duration: 0.5, volume: 0.22, mixMode: 'mix', fadeOut: 0.5 } })
+    const output = path.join(folder, 'truncated-probe-music.mp4')
+    const sequence = [0, 1, 0, 1].map((sourceStart) => ({ sourceStart, sourceEnd: sourceStart + 1, frames: 30 }))
+    const sourceWithBadDuration = { ...source, audio: { ...source.audio, duration: 0.5 } }
+    await media.render(ffmpeg, sourceWithBadDuration, { sequence }, options, output)
+    expect(await rms(output, 0.5)).toBeLessThan(-18)
+    expect(await rms(output, 1.5)).toBeLessThan(-18)
+    expect(await rms(output, 2.5)).toBeLessThan(-18)
+    expect(await rms(output, 3.5)).toBeLessThan(-18)
+  }, 30000)
+
+  it('replaces source audio without leaving an unconnected concat output', async () => {
+    const music = path.join(folder, 'replace-background.wav')
+    await media.run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=880:sample_rate=48000:duration=0.5', '-c:a', 'pcm_s16le', music])
+    const options = normalizeOptions({ count: 1, targetSeconds: 2, width: 320, height: 180, backgroundAudio: { path: music, name: 'replace', duration: 0.5, volume: 0.22, mixMode: 'replace', fadeOut: 0.5 } })
+    const output = path.join(folder, 'replace-music.mp4')
+    await media.render(ffmpeg, source, { sequence: [{ sourceStart: 0, sourceEnd: 2, frames: 60 }] }, options, output)
+    const result = await media.verify(ffmpeg, ffprobe, output, options, true)
+    expect(result.audioDuration).toBeCloseTo(2, 2)
+  }, 30000)
+
   it('retries a hardware initialization failure once with a valid software output', async () => {
     if (process.platform !== 'darwin') return
     const options = normalizeOptions({ count: 1, targetSeconds: 1, width: 320, height: 180 })

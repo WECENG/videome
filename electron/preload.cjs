@@ -94,11 +94,6 @@ contextBridge.exposeInMainWorld('videome', {
     ipcRenderer.on('videome:preview-event', handler)
     return () => ipcRenderer.removeListener('videome:preview-event', handler)
   },
-  onPreviewClosed(callback) {
-    const handler = (_event, payload) => callback(payload)
-    ipcRenderer.on('videome:preview-closed', handler)
-    return () => ipcRenderer.removeListener('videome:preview-closed', handler)
-  },
   onOpenProjectFile(callback) {
     openProjectListeners.add(callback)
     while (pendingOpenProjects.length) callback(pendingOpenProjects.shift())

@@ -121,6 +121,8 @@ function buildArguments(source, sequence, options, output, encoder) {
   const filters = []
   const videoLabels = []
   const audioLabels = []
+  const hasBackground = Boolean(options.backgroundAudio?.path)
+  const keepSourceAudio = Boolean(source.audio && (!hasBackground || options.backgroundAudio.mixMode !== 'replace'))
   let input = 0
   for (const [index, clip] of sequence.entries()) {
     const duration = clip.frames / options.fps
@@ -128,29 +130,33 @@ function buildArguments(source, sequence, options, output, encoder) {
     args.push('-threads', '1', '-ss', String(source.videoOffset + clip.sourceStart), '-t', String(duration + 1 / options.fps), '-i', source.path)
     filters.push(`[${videoInput}:${source.videoStream}]setpts=PTS-STARTPTS,fps=${options.fps},scale=${options.width}:${options.height}:force_original_aspect_ratio=decrease,pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=${1 / options.fps},trim=end_frame=${clip.frames},setpts=N/(${options.fps}*TB)[v${index}]`)
     videoLabels.push(`[v${index}]`)
-    if (source.audio) {
-      const availableStart = Math.max(clip.sourceStart, source.audio.offset)
-      const availableEnd = Math.min(clip.sourceStart + duration, source.audio.offset + source.audio.duration)
+    if (keepSourceAudio) {
       const samples = Math.round(duration * 48000)
-      if (availableEnd > availableStart) {
+      // Do not use the probed audio duration to decide whether a later video
+      // segment has source audio. A number of containers report a short or
+      // incomplete audio duration even though FFmpeg can still decode audio
+      // at later timestamps. Always extract the requested video interval and
+      // let apad fill only the genuine end-of-stream gap.
+      const delay = Math.max(0, Math.round((source.audio.offset - clip.sourceStart) * 48000))
+      const sourceOffset = Math.max(clip.sourceStart, source.audio.offset)
+      const extractDuration = duration - Math.max(0, source.audio.offset - clip.sourceStart)
+      if (extractDuration > 0) {
         const audioInput = input++
-        args.push('-threads', '1', '-ss', String(source.audio.containerOffset + availableStart - source.audio.offset), '-t', String(availableEnd - availableStart), '-i', source.path)
-        const delay = Math.round((availableStart - clip.sourceStart) * 48000)
+        args.push('-threads', '1', '-ss', String(source.audio.containerOffset + sourceOffset - source.audio.offset), '-t', String(extractDuration), '-i', source.path)
         filters.push(`[${audioInput}:${source.audio.stream}]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB,adelay=${delay}S:all=1,apad,atrim=end_sample=${samples},asetpts=N/SR/TB[a${index}]`)
       } else filters.push(`anullsrc=r=48000:cl=stereo,atrim=end_sample=${samples},asetpts=N/SR/TB[a${index}]`)
       audioLabels.push(`[a${index}]`)
     }
   }
-  const hasBackground = Boolean(options.backgroundAudio?.path)
-  const concatLabels = sequence.flatMap((_clip, index) => source.audio ? [`[v${index}]`, `[a${index}]`] : [`[v${index}]`])
-  filters.push(`${concatLabels.join('')}concat=n=${sequence.length}:v=1:a=${source.audio ? 1 : 0}[video]${source.audio ? '[sourceAudio]' : ''}`)
+  const concatLabels = sequence.flatMap((_clip, index) => keepSourceAudio ? [`[v${index}]`, `[a${index}]`] : [`[v${index}]`])
+  filters.push(`${concatLabels.join('')}concat=n=${sequence.length}:v=1:a=${keepSourceAudio ? 1 : 0}[video]${keepSourceAudio ? '[sourceAudio]' : ''}`)
   if (hasBackground) {
     const backgroundInput = input++
     args.push('-stream_loop', '-1', '-ss', String(options.backgroundAudio.start || 0), '-i', options.backgroundAudio.path)
     const musicTail = Math.max(0, options.actualSeconds - Number(options.backgroundAudio.fadeOut || 0))
     const fade = Number(options.backgroundAudio.fadeOut || 0) > 0 ? `,afade=t=out:st=${musicTail}:d=${Number(options.backgroundAudio.fadeOut)}` : ''
     const musicBase = `[${backgroundInput}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB,volume=${Number(options.backgroundAudio.volume ?? 0.22)},atrim=duration=${options.actualSeconds},asetpts=N/SR/TB${fade}`
-    if (options.backgroundAudio.mixMode === 'replace' || !source.audio) filters.push(`${musicBase}[audio]`)
+    if (options.backgroundAudio.mixMode === 'replace' || !keepSourceAudio) filters.push(`${musicBase}[audio]`)
     else if (options.backgroundAudio.ducking === 'auto') filters.push(`${musicBase}[music]`, '[sourceAudio]asplit=2[sourceSidechain][sourceMix]', '[music][sourceSidechain]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=300[ducked]', `[sourceMix][ducked]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${options.actualSeconds},asetpts=N/SR/TB[audio]`)
     else filters.push(`${musicBase}[music]`, `[sourceAudio][music]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,atrim=duration=${options.actualSeconds},asetpts=N/SR/TB[audio]`)
   }

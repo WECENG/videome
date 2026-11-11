@@ -7,6 +7,7 @@ const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { buildExportArguments, buildSubtitles, classifyAsset } = require('./export.cjs')
 const { buildPreviewProxyArguments } = require('./preview.cjs')
+const { managePreviewWindow } = require('./preview-window.cjs')
 const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectBackupSourcePath, projectFileName, withProjectExtension, writeProjectBackup, writeProjectSnapshot } = require('./project.cjs')
 const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
 const { registerBatchMixIpc } = require('./batch/ipc.cjs')
@@ -988,18 +989,12 @@ ipcMain.handle('videome:open-preview', async (event, asset) => {
       webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(__dirname, 'preload.cjs') },
     })
     previewWindows.add(window)
+    managePreviewWindow(window, { owner: parent })
+    window.once('closed', () => previewWindows.delete(window))
     const escapedUrl = JSON.stringify(`videome-media://local?path=${encodeURIComponent(mediaPath)}`)
     const escapedName = JSON.stringify(asset.name || path.basename(mediaPath))
-    const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${String(asset.name || 'Videome').replace(/[<>"'&]/g, '')}</title><style>*{box-sizing:border-box}body{margin:0;background:#090b0f;color:#ece8df;font:14px -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}main{height:100vh;display:flex;flex-direction:column}.bar{height:54px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 14px 0 20px;background:#111419;border-bottom:1px solid #ffffff10}.bar-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar span{opacity:.65;font:11px ui-monospace}.close{flex:0 0 auto;border:1px solid #ffffff24;border-radius:6px;background:#ffffff0d;color:#ece8df;padding:7px 12px;cursor:pointer;font:12px -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}.close:hover{background:#ffffff1a}.close:focus-visible{outline:2px solid #9fc5a8;outline-offset:2px}video{width:100%;height:calc(100vh - 54px);object-fit:contain;background:#06080a}video::-webkit-media-controls{filter:invert(.9) hue-rotate(175deg)}</style><main><div class="bar"><div class="bar-copy" id="name"></div><span>LOCAL PREVIEW</span><button class="close" id="close" type="button">关闭预览</button></div><video id="media" controls autoplay playsinline></video></main><script>document.getElementById('media').src=${escapedUrl};document.getElementById('name').textContent=${escapedName};document.getElementById('close').addEventListener('click',()=>window.videome?.closePreviewWindow?.());document.addEventListener('keydown',event=>{if(event.key==='Escape')window.videome?.closePreviewWindow?.()})</script></html>`
+    const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${String(asset.name || 'Videome').replace(/[<>"'&]/g, '')}</title><style>*{box-sizing:border-box}body{margin:0;background:#090b0f;color:#ece8df;font:14px -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}main{height:100vh;display:flex;flex-direction:column}.bar{height:54px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 14px 0 20px;background:#111419;border-bottom:1px solid #ffffff10}.bar-copy{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.bar span{opacity:.65;font:11px ui-monospace}.close{flex:0 0 auto;border:1px solid #ffffff24;border-radius:6px;background:#ffffff0d;color:#ece8df;padding:7px 12px;cursor:pointer;font:12px -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}.close:hover{background:#ffffff1a}.close:focus-visible{outline:2px solid #9fc5a8;outline-offset:2px}video{width:100%;height:calc(100vh - 54px);object-fit:contain;background:#06080a}video::-webkit-media-controls{filter:invert(.9) hue-rotate(175deg)}</style><main><div class="bar"><div class="bar-copy" id="name"></div><span>LOCAL PREVIEW</span><button class="close" id="close" type="button">关闭预览</button></div><video id="media" controls autoplay playsinline></video></main><script>document.getElementById('media').src=${escapedUrl};document.getElementById('name').textContent=${escapedName};document.getElementById('close').addEventListener('click',()=>window.videome?.closePreviewWindow?.());document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.fullscreenElement)window.videome?.closePreviewWindow?.()})</script></html>`
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-    window.on('closed', () => {
-      previewWindows.delete(window)
-      if (parent && !parent.isDestroyed()) {
-        parent.webContents.send('videome:preview-closed', { path: mediaPath })
-        parent.show()
-        parent.focus()
-      }
-    })
     return { ok: true }
   } catch (error) {
     return { ok: false, reason: error.message || '无法创建独立预览窗口。' }
@@ -1008,7 +1003,7 @@ ipcMain.handle('videome:open-preview', async (event, asset) => {
 
 ipcMain.handle('videome:close-preview-window', (event) => {
   const window = BrowserWindow.fromWebContents(event.sender)
-  if (!window || window.isDestroyed()) return { ok: false, reason: '预览窗口已关闭。' }
+  if (!window || window.isDestroyed() || !previewWindows.has(window)) return { ok: false, reason: '预览窗口已关闭。' }
   window.close()
   return { ok: true }
 })
