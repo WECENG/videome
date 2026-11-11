@@ -1795,7 +1795,6 @@ function App() {
     return clips.map((selected) => {
       let sourceClip = selected
       if (selected.kind === 'video') sourceClip = projectRef.current.clips.find((clip) => clip.kind === 'audio' && clip.linkedClipId === selected.id) || selected
-      const track = projectRef.current.tracks.find((item) => item.id === sourceClip.trackId)
       const asset = projectRef.current.assets.find((item) => item.id === sourceClip.assetId)
       if (!asset?.path || asset.missing) throw new Error(`「${sourceClip.name || '片段'}」的本地媒体文件不可用，请重新关联源素材。`)
       const muteForClip = (clip) => Boolean(clip.muted || projectRef.current.tracks.find((item) => item.id === clip.trackId)?.muted || Number(clip.volume ?? 0.82) <= 0)
@@ -1803,13 +1802,8 @@ function App() {
         throw new Error(`「${sourceClip.name || '片段'}」已静音或音量为零，请先取消静音并调高音量。`)
       }
       if (!(sourceClip.duration > 0) || sourceClip.duration > 1800) throw new Error('单个片段识别时长需要在 30 分钟以内。')
-      const range = timelineWhisperSourceRange(sourceClip, selected.kind === 'video' && selected !== sourceClip ? selected : null, projectRef.current.playhead)
-      const signature = JSON.stringify({ id: sourceClip.id, assetId: sourceClip.assetId, start: sourceClip.start, duration: sourceClip.duration, trimStart: sourceClip.trimStart,
-        muted: sourceClip.muted, volume: sourceClip.volume, trackId: sourceClip.trackId, trackMuted: track?.muted,
-        visual: selected.kind === 'video' && selected !== sourceClip ? { id: selected.id, start: selected.start, duration: selected.duration, trimStart: selected.trimStart, trackId: selected.trackId } : null })
-      return { clipId: sourceClip.id, selectedClipId: selected.id, assetId: asset.id, path: asset.path, clipName: sourceClip.name || selected.name || '片段',
-        ...range, clipSignature: signature }
-    }).sort((first, second) => first.start - second.start)
+      return { path: asset.path, clipName: sourceClip.name || selected.name || '片段', ...timelineWhisperSourceRange(sourceClip) }
+    }).sort((first, second) => first.timelineStart - second.timelineStart)
   }
 
   async function installWhisper() {
@@ -1835,6 +1829,7 @@ function App() {
     if (subtitleBusy || whisperStatus.installing || whisperStatus.recognizing) return
     if (!whisperStatus.ready) { setStatus('请先在字幕面板安装多语言 Whisper。', 'info'); return }
     const mergeExistingCaptions = mergeWhisperSubtitles
+    const recognitionProjectIdentity = projectIdentityRef.current
     let sources
     try { sources = subtitleSourcesFromSelection() } catch (error) { setStatus(error.message, 'info'); return }
     setSubtitleBusy(true)
@@ -1847,21 +1842,9 @@ function App() {
         setWhisperStatus((current) => ({ ...current, recognizing: true, stage: `识别片段 ${index + 1} / ${sources.length} · ${source.clipName}`, recognitionProgress: 0 }))
         const result = await window.videome.recognizeWhisper({ path: source.path, trimStart: source.trimStart, duration: source.duration })
         if (!result?.ok) throw new Error(`${source.clipName}：${result?.reason || '字幕识别失败。'}`)
-        if (!Array.isArray(result.value) || !result.value.length) throw new Error(`「${source.clipName}」中没有识别到有效语音。`)
-        const current = projectRef.current
-        const liveClip = current.clips.find((clip) => clip.id === source.clipId)
-        const liveAsset = current.assets.find((asset) => asset.id === source.assetId)
-      const liveSelectedClip = current.clips.find((clip) => clip.id === source.selectedClipId)
-        const liveTrack = current.tracks.find((track) => track.id === liveClip?.trackId)
-      const selectedTrack = current.tracks.find((track) => track.id === liveSelectedClip?.trackId)
-        const currentClip = liveClip && timelineWhisperSourceRange(liveClip)
-      const selectedMuted = source.selectedClipId === source.clipId && liveSelectedClip
-        && (liveSelectedClip.muted || selectedTrack?.muted || Number(liveSelectedClip.volume ?? 0.82) <= 0)
-        const currentSignature = liveClip && JSON.stringify({ id: liveClip.id, assetId: liveClip.assetId, start: liveClip.start, duration: liveClip.duration, trimStart: liveClip.trimStart,
-          muted: liveClip.muted, volume: liveClip.volume, trackId: liveClip.trackId, trackMuted: liveTrack?.muted,
-          visual: source.selectedClipId !== source.clipId ? (() => { const visual = current.clips.find((clip) => clip.id === source.selectedClipId); return visual ? { id: visual.id, start: visual.start, duration: visual.duration, trimStart: visual.trimStart, trackId: visual.trackId } : null })() : null })
-      if (!liveClip || !liveSelectedClip || selectedMuted || liveAsset?.path !== source.path || currentSignature !== source.clipSignature || !currentClip || currentClip.trimStart !== source.trimStart || currentClip.duration !== source.duration || currentClip.timelineStart !== source.start) throw new Error(`识别期间「${source.clipName}」已变化，请重新选择并识别。`)
-        allCues.push(...result.value.map((cue) => ({ ...cue, sourceDuration: source.duration, timelineStart: source.start })))
+        if (!Array.isArray(result.value) || !result.value.length) throw new Error(`「${source.clipName}」没有返回有效字幕，请重试识别。`)
+        if (projectIdentityRef.current !== recognitionProjectIdentity) throw new Error('识别期间工程已切换，已停止写入结果；请在当前工程重新识别。')
+        allCues.push(...result.value.map((cue) => ({ ...cue, sourceDuration: source.duration, timelineStart: source.timelineStart })))
       }
       const prefix = `whisper-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`
       const committed = createWhisperSubtitleEdit(projectRef.current, allCues, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: prefix, merge: mergeExistingCaptions })

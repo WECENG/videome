@@ -28,10 +28,15 @@ describe('Whisper subtitle timeline edit', () => {
   it('keeps trim and timeline offsets for each selected clip in a multi-clip recognition batch', () => {
     expect(timelineWhisperSourceRange({ start: 6, duration: 4, trimStart: 9 })).toEqual({ timelineStart: 6, duration: 4, trimStart: 9 })
     const source = project()
-    const result = createWhisperSubtitleEdit(source, [
-      { start: 0.25, end: 0.75, text: 'first', sourceDuration: 2, timelineStart: 8 },
-      { start: 1, end: 2, text: 'second', sourceDuration: 5, timelineStart: 14 },
-    ], { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: 'batch' })
+    const ranges = [
+      timelineWhisperSourceRange({ start: 8, duration: 2, trimStart: 9 }),
+      timelineWhisperSourceRange({ start: 14, duration: 5, trimStart: 20 }),
+    ]
+    const transcript = [
+      { start: 0.25, end: 0.75, text: 'first' },
+      { start: 1, end: 2, text: 'second' },
+    ].map((cue, index) => ({ ...cue, sourceDuration: ranges[index].duration, timelineStart: ranges[index].timelineStart }))
+    const result = createWhisperSubtitleEdit(source, transcript, { timelineStart: 0, sourceDuration: Number.MAX_SAFE_INTEGER, idPrefix: 'batch' })
     expect(result.cues.map((cue) => [cue.start, cue.end])).toEqual([[8.25, 8.75], [15, 16]])
   })
 

@@ -241,20 +241,24 @@ class WhisperManager extends EventEmitter {
       if (!await hasAudiblePcmWav(input, controller.signal)) throw new Error('所选片段没有检测到有效声音，已跳过静音音频。')
       this.publish({ stage: '正在识别所选片段', recognitionProgress: 0 })
       let progressOutputBuffer = ''
+      const publishProgress = (line) => {
+        try {
+          const value = JSON.parse(line)
+          if (Number.isFinite(value.progress)) this.publish({ stage: value.stage || '正在识别整段音频', recognitionProgress: Math.max(0, Math.min(100, value.progress)) })
+        } catch {}
+      }
       await this.runProcess(this.python, [path.join(this.resources, 'worker.py'), 'transcribe', '--models', this.directory, '--input', input, '--output', folder, '--model', this.model, '--multilingual', '--duration', String(numericDuration)], {
         signal: controller.signal, timeout: 60 * 60_000, env: { PYTHONNOUSERSITE: '1', HF_HUB_OFFLINE: '1', PYTHONPATH: this.directory }, inheritEnv: false,
         onOutput: (chunk) => {
           const lines = (progressOutputBuffer + chunk).split(/\r?\n/)
           progressOutputBuffer = lines.pop() || ''
-          for (const line of lines) {
-            try { const value = JSON.parse(line); if (Number.isFinite(value.progress)) this.publish({ stage: '正在识别所选片段', recognitionProgress: Math.max(0, Math.min(100, value.progress)) }) } catch {}
-          }
+          lines.forEach(publishProgress)
         },
       })
-      if (progressOutputBuffer) {
-        try { const value = JSON.parse(progressOutputBuffer); if (Number.isFinite(value.progress)) this.publish({ stage: '正在识别所选片段', recognitionProgress: Math.max(0, Math.min(100, value.progress)) }) } catch {}
-      }
+      if (progressOutputBuffer) publishProgress(progressOutputBuffer)
       const cues = JSON.parse(await fs.readFile(path.join(folder, 'transcript.json'), 'utf8'))
+      if (!Array.isArray(cues)) throw new Error('Whisper 返回了无效的字幕结果。')
+      if (!cues.length) throw new Error('已完整识别所选片段，但未识别出可用字幕。请确认片段中有清晰人声后重试。')
       this.publish({ recognizing: false, stage: '识别完成', recognitionProgress: 100 })
       return cues
     })().catch((error) => {

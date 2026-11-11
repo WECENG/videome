@@ -39,22 +39,62 @@ def separate(args):
 
 
 def transcribe(args):
+    import numpy as np
     from pywhispercpp.model import Model
     model_path = args.model or str(args.models / "small.en.bin")
     model = Model(model_path, n_threads=4, print_realtime=False, print_progress=False)
-    segments = []
+    audio = model._load_audio(str(args.input))
+    language = "en"
+    if args.multilingual:
+        # Whisper auto-detection on the entire recording can choose the wrong
+        # language when its opening is silent. Probe a few loud, separated
+        # windows for language only, then still transcribe the complete audio
+        # once so sparse speech keeps its original timestamps and context.
+        sample_rate = 16000
+        window_samples = min(sample_rate * 6, max(sample_rate, int(audio.size)))
+        stride = max(1, window_samples // 2)
+        starts = list(range(0, max(1, int(audio.size) - window_samples + 1), stride))
+        final_start = max(0, int(audio.size) - window_samples)
+        if not starts or starts[-1] != final_start:
+            starts.append(final_start)
+        candidates = []
+        for start in starts:
+            window = audio[start:min(int(audio.size), start + window_samples)]
+            if window.size < sample_rate:
+                window = np.pad(window, (0, sample_rate - window.size))
+            rms = float(np.sqrt(np.mean(np.square(window, dtype=np.float64)))) if window.size else 0
+            if rms > 0:
+                candidates.append((rms, start, window))
+        candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        language_samples = []
+        for candidate in candidates:
+            _, start, _ = candidate
+            if all(abs(start - other_start) >= window_samples for _, other_start, _ in language_samples):
+                language_samples.append(candidate)
+            if len(language_samples) == 3:
+                break
+        language_probabilities = {}
+        for index, (_, _, window) in enumerate(language_samples):
+            _, probabilities = model.auto_detect_language(window, n_threads=4)
+            for code, probability in probabilities.items():
+                language_probabilities[code] = language_probabilities.get(code, 0.0) + float(probability)
+            print(json.dumps({"stage": "正在检测语种", "progress": min(5, (index + 1) / len(language_samples) * 5)}), flush=True)
+        language = max(language_probabilities, key=language_probabilities.get) if language_probabilities else "auto"
+        print(json.dumps({"stage": "已检测语种，正在识别整段音频", "progress": 5}), flush=True)
 
     def report_segment(segment):
-        segments.append(segment)
         if args.multilingual and args.duration > 0:
-            value = min(99, max(0, segment.t1 / 100 / args.duration * 100))
-            print(json.dumps({"progress": value}), flush=True)
+            value = min(99, max(5, segment.t1 / 100 / args.duration * 100))
+            print(json.dumps({"stage": "正在识别整段音频", "progress": value}), flush=True)
 
-    segments = model.transcribe(str(args.input), language="" if args.multilingual else "en", detect_language=args.multilingual,
+    # whisper.cpp treats detect_language=True as detection-only and returns
+    # before decoding; keep it false even when language="auto" is needed.
+    segments = model.transcribe(audio, language=language, detect_language=False,
                                 new_segment_callback=report_segment, translate=False, no_context=True,
                                 suppress_blank=True, max_len=160, split_on_word=True, temperature=0.0)
-    result = [{"id": f"cue-{i}", "start": s.t0 / 100, "end": s.t1 / 100, "text": s.text.strip(), "translation": "", "status": "draft"}
-              for i, s in enumerate(segments) if s.text.strip() and s.t1 > s.t0]
+    result = [{"id": f"cue-{i}", "start": segment.t0 / 100, "end": segment.t1 / 100,
+               "text": segment.text.strip(), "translation": "", "status": "draft"}
+              for i, segment in enumerate(segments) if segment.text.strip() and segment.t1 > segment.t0]
     (args.output / "transcript.json").write_text(json.dumps(result, ensure_ascii=False))
     print(json.dumps({"progress": 100}), flush=True)
 
