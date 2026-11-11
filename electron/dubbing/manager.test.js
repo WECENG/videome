@@ -123,7 +123,12 @@ describe('dubbing timing and persistent tasks', () => {
       manager.analyze = async (job) => { job.cues = [{ id: 'cue-0', start: 0, end: 1, text: 'Hello', translation: '你好', status: 'draft' }]; job.backgroundPath = path.join(root, 'background.wav'); await fs.writeFile(job.backgroundPath, 'background') }
       manager.generate = async (job) => { job.cues[0].audioPath = path.join(root, 'cue.wav'); job.cues[0].status = 'ready'; job.status = 'ready'; job.stage = '试听确认后入轨' }
       const job = await manager.create({ projectId: 'p', source: { path: source, duration: 1, trimStart: 0, start: 0, snapshot: '{}' }, action: 'auto' })
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      // `create()` starts the action in the background. A fixed delay can
+      // finish before the final save on slower Windows runners, leaving an
+      // open write when the temporary test directory is removed and causing
+      // EBUSY from fs.rm(). Wait for the manager's actual task promise.
+      const activePromise = manager.active?.promise
+      if (activePromise) await activePromise
       expect(manager.get(job.id)).toMatchObject({ status: 'ready', cues: [{ translation: '你好', status: 'ready' }] })
     } finally { await fs.rm(root, { recursive: true, force: true }) }
   })
