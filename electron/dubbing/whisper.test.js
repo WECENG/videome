@@ -10,6 +10,7 @@ const execute = promisify(execFile)
 const testPython = ['python3', 'python'].find((binary) => spawnSync(binary, ['-c', 'import sys; sys.exit(sys.version_info < (3, 9))'], { stdio: 'ignore' }).status === 0)
 const { DubbingModels } = require('./models.cjs')
 const { WhisperManager, requirementsForWhisper, hasAudiblePcmWav } = require('./whisper.cjs')
+const supportedWhisperPlatform = { platform: 'darwin', arch: 'arm64' }
 
 let temporaryRoots = []
 const makeRoot = async () => {
@@ -33,11 +34,17 @@ describe('independent multilingual Whisper service', () => {
     expect(requirements).not.toContain('sherpa-onnx==')
   })
 
+  it('selects Whisper dependencies when pip lock text uses Windows line endings', async () => {
+    const source = await fs.readFile(path.join(__dirname, '../../resources/dubbing/requirements.lock'), 'utf8')
+    const requirements = requirementsForWhisper(source.replace(/\n/g, '\r\n'))
+    expect([...requirements.matchAll(/^([\w.-]+)==/gm)].map((match) => match[1])).toHaveLength(9)
+  })
+
   it('reports missing and corrupted multilingual model separately from the dubbing model set', async () => {
     const root = await makeRoot()
     const resources = path.resolve(__dirname, '../../resources/dubbing')
     const models = new DubbingModels({ root, resources })
-    const whisper = new WhisperManager({ root, resources, models,
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models,
       checkDependencies: async () => true,
       checkPythonRuntime: async () => fs.access(models.python).then(() => true).catch(() => false),
     })
@@ -61,7 +68,7 @@ describe('independent multilingual Whisper service', () => {
     const downloaded = []
     let installedRequirements = ''
     let pythonReady = false
-    const whisper = new WhisperManager({ root, resources, models, checkPythonRuntime: async () => pythonReady, checkDependencies: async () => installedRequirements === 'installed',
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models, checkPythonRuntime: async () => pythonReady, checkDependencies: async () => installedRequirements === 'installed',
       hashFile: async () => models.manifest.subtitleWhisper.sha256,
       downloadAsset: async (asset, target, { progress }) => {
         downloaded.push(asset.id)
@@ -98,7 +105,7 @@ describe('independent multilingual Whisper service', () => {
     const models = new DubbingModels({ root, resources })
     const secret = 'private-proxy-pass'
     models.network.read = async () => ({ mode: 'manual', url: 'http://127.0.0.1:7890', username: 'proxy-user', password: secret })
-    const whisper = new WhisperManager({ root, resources, models, checkPythonRuntime: async () => false,
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models, checkPythonRuntime: async () => false,
       downloadAsset: async () => { throw new Error(`connect http://proxy-user:${secret}@127.0.0.1:7890 failed`) },
     })
     const installation = whisper.install()
@@ -112,7 +119,7 @@ describe('independent multilingual Whisper service', () => {
     const resources = path.resolve(__dirname, '../../resources/dubbing')
     const models = new DubbingModels({ root, resources })
     const downloaded = []
-    const whisper = new WhisperManager({ root, resources, models, checkPythonRuntime: async () => true, checkDependencies: async () => false,
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models, checkPythonRuntime: async () => true, checkDependencies: async () => false,
       hashFile: async () => models.manifest.subtitleWhisper.sha256,
       downloadAsset: async (asset, target) => {
         downloaded.push(asset.id)
@@ -140,7 +147,7 @@ describe('independent multilingual Whisper service', () => {
     const resources = path.resolve(__dirname, '../../resources/dubbing')
     const models = new DubbingModels({ root, resources })
     const runCalls = []
-    const whisper = new WhisperManager({ root, resources, models, checkDependencies: async () => true, checkPythonRuntime: async () => true,
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models, checkDependencies: async () => true, checkPythonRuntime: async () => true,
       runProcess: async (binary, args, options) => {
         runCalls.push({ binary, args, options })
         if (binary === '/media/ffmpeg') {
@@ -272,7 +279,7 @@ assert bool(probes) == (multilingual and amplitude > 0)
     const resources = path.resolve(__dirname, '../../resources/dubbing')
     const models = new DubbingModels({ root, resources })
     const gate = { owner: null, acquire(owner) { if (this.owner) return false; this.owner = owner; return true }, release(owner) { if (this.owner === owner) this.owner = null } }
-    const whisper = new WhisperManager({ root, resources, models, ffmpeg: '/media/ffmpeg', gate,
+    const whisper = new WhisperManager({ ...supportedWhisperPlatform, root, resources, models, ffmpeg: '/media/ffmpeg', gate,
       checkDependencies: async () => true, checkPythonRuntime: async () => true,
       runProcess: async (binary, args) => {
         if (binary === '/media/ffmpeg') {

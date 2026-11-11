@@ -35,9 +35,10 @@ describe('local Qwen translation', () => {
     const folder = path.join(root, 'job'); await fs.mkdir(folder)
     const source = path.join(root, 'source.wav'); await fs.writeFile(source, 'source')
     const stat = await fs.stat(source)
-    const binary = path.join(root, 'llama-test')
-    await fs.writeFile(binary, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(path.join(root, 'arguments.json'))},JSON.stringify(process.argv.slice(2)));process.stderr.write('runtime diagnostics only');process.stdout.write(${JSON.stringify(valid ? '\n小时候，他总是仔细观察周围。 [end of text]\n' : '')});`, { mode: 0o700 })
-    const manager = new DubbingManager({ root, models: { llama: binary, directory: root, status: async () => ({ ready: true }) } })
+    const binary = process.execPath
+    const script = path.join(root, 'llama-test.cjs')
+    await fs.writeFile(script, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(path.join(root, 'arguments.json'))},JSON.stringify(process.argv.slice(2)));process.stderr.write('runtime diagnostics only');process.stdout.write(${JSON.stringify(valid ? '\n小时候，他总是仔细观察周围。 [end of text]\n' : '')});`, 'utf8')
+    const manager = new DubbingManager({ root, models: { llama: binary, llamaArgs: [script], directory: root, status: async () => ({ ready: true }) } })
     await manager.initialized
     const job = { id: 'job', source: { path: source, duration: 20 }, fingerprint: { size: stat.size, mtimeMs: stat.mtimeMs }, backgroundPath: '/background.wav',
       status: 'review', error: '翻译未返回中文', cues: [

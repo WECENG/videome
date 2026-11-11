@@ -95,7 +95,7 @@ def transcribe(args):
     result = [{"id": f"cue-{i}", "start": segment.t0 / 100, "end": segment.t1 / 100,
                "text": segment.text.strip(), "translation": "", "status": "draft"}
               for i, segment in enumerate(segments) if segment.text.strip() and segment.t1 > segment.t0]
-    (args.output / "transcript.json").write_text(json.dumps(result, ensure_ascii=False))
+    (args.output / "transcript.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"progress": 100}), flush=True)
 
 
@@ -110,7 +110,7 @@ def tts(args):
         num_threads=4, debug=False, provider="cpu"),
         rule_fsts=','.join(str(root / name) for name in ("phone-zh.fst", "date-zh.fst", "number-zh.fst")))
     engine = sherpa_onnx.OfflineTts(config)
-    cues = json.loads(args.input.read_text())
+    cues = json.loads(args.input.read_text(encoding="utf-8"))
     for cue in cues:
         segments = cue.get("prosody", {}).get("segments") or [{"text": cue["translation"], "rate": 1.0, "pauseAfterMs": 0}]
         rendered = []

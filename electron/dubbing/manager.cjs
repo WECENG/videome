@@ -401,7 +401,7 @@ class DubbingManager extends EventEmitter {
       job.stage = `本地翻译中文 · Qwen3 4B · ${index + 1}/${job.cues.length}`; await this.save(job)
       const promptPath = path.join(folder, 'translation-prompt.txt')
       await fs.writeFile(promptPath, translationPrompt(job.cues, index))
-      const output = await run(this.models.llama, translationArguments(this.models.directory, promptPath), { signal, timeout: 5 * 60_000 })
+      const output = await run(this.models.llama, [...(this.models.llamaArgs || []), ...translationArguments(this.models.directory, promptPath)], { signal, timeout: 5 * 60_000 })
       await fs.writeFile(path.join(folder, 'translation-output.txt'), output)
       cue.translation = parseTranslation(output)
       cue.prosody = analyzeProsody(cue.translation, job.style)

@@ -47,7 +47,16 @@ async function hasAudiblePcmWav(file, signal) {
 
 function requirementsForWhisper(source) {
   const selected = new Set(['certifi', 'charset-normalizer', 'idna', 'numpy', 'platformdirs', 'pywhispercpp', 'requests', 'tqdm', 'urllib3'])
-  const blocks = source.match(/^[\w.-]+==[^\n]*\\\n(?:^[ \t]+--hash=[^\n]*\\?\n)*/gm) || []
+  const normalized = String(source).replace(/\r\n?/g, '\n')
+  const blocks = []
+  let current = ''
+  for (const line of normalized.split('\n')) {
+    if (/^[\w.-]+==/.test(line)) {
+      if (current) blocks.push(current)
+      current = `${line}\n`
+    } else if (current) current += `${line}\n`
+  }
+  if (current) blocks.push(current)
   const requirements = blocks.filter((block) => selected.has(block.match(/^([\w.-]+)==/)[1].toLowerCase().replaceAll('_', '-')))
   const included = new Set(requirements.map((block) => block.match(/^([\w.-]+)==/)[1].toLowerCase().replaceAll('_', '-')))
   if ([...selected].some((name) => !included.has(name))) throw new Error('Whisper 安装依赖锁文件不完整。')
