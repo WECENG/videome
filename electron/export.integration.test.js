@@ -139,6 +139,36 @@ describe('FFmpeg timeline export', () => {
     expect(plan.args[plan.args.indexOf('-t') + 1]).toBe('2')
   })
 
+  it.each([true, false])('respects repeat=%s and the selected music source start in the rendered audio', async (repeat) => {
+    const music = path.join(folder, 'silent-intro.wav')
+    await execFileAsync(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'aevalsrc=if(lt(t\\,0.5)\\,0\\,0.3*sin(2*PI*880*t)):s=48000:d=1', '-c:a', 'pcm_s16le', music])
+    const output = path.join(folder, `music-repeat-${repeat}.mkv`)
+    const project = {
+      duration: 2, frameSize: { width: 320, height: 180 }, frameRate: { numerator: 30, denominator: 1 },
+      tracks: [{ id: 'video', type: 'video' }, { id: 'music', type: 'audio', label: '背景音乐' }],
+      assets: [{ id: 'source', path: path.join(folder, 'source.mp4'), kind: 'video' }, { id: 'music', path: music, kind: 'audio', duration: 1 }],
+      clips: [
+        { id: 'picture', kind: 'video', trackId: 'video', assetId: 'source', start: 0, duration: 2, volume: 0 },
+        { id: 'music', kind: 'audio', trackId: 'music', assetId: 'music', start: 0, duration: 2, trimStart: 0.5, trimEnd: 2.5, repeat, autoDuck: false, volume: 1 },
+      ],
+    }
+    const plan = buildExportArguments({ preset: 'lossless', format: 'mkv', project }, output, null, { encoder: 'libx264' })
+    await execFileAsync(ffmpeg, plan.args, { maxBuffer: 8e6 })
+    const { stdout: pcm } = await execFileAsync(ffmpeg, ['-v', 'error', '-i', output, '-map', '0:a:0', '-f', 'f32le', '-ac', '1', '-ar', '48000', '-'], { encoding: 'buffer', maxBuffer: 8e6 })
+    const rms = (start) => {
+      let sum = 0
+      const first = Math.round(start * 48000)
+      const count = 4800
+      for (let index = first; index < first + count; index += 1) sum += pcm.readFloatLE(index * 4) ** 2
+      return Math.sqrt(sum / count)
+    }
+    expect(rms(0.1)).toBeGreaterThan(0.1)
+    for (const start of [0.6, 1.1, 1.6]) {
+      if (repeat) expect(rms(start)).toBeGreaterThan(0.1)
+      else expect(rms(start)).toBeLessThan(0.001)
+    }
+  }, 30_000)
+
   it.each([
     ['enabled embedded audio', { volume: 1 }, null, false, 1],
     ['muted embedded audio', { volume: 0 }, null, false, 0],

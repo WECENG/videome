@@ -18,6 +18,8 @@ const { DubbingManager } = require('./dubbing/manager.cjs')
 const { registerDubbingIpc } = require('./dubbing/ipc.cjs')
 const { WhisperManager } = require('./dubbing/whisper.cjs')
 const { TtsNetworkSettings } = require('./dubbing/tts-network.cjs')
+const { MusicAnalysisService } = require('./music-analysis.cjs')
+const { registerMusicAnalysisIpc } = require('./music-analysis-ipc.cjs')
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173'
 const projectFilter = [{ name: 'Videome 工程', extensions: ['videome'] }]
@@ -29,6 +31,17 @@ const previewProxyJobs = new Map()
 const queueProjectWrite = createProjectWriteQueue()
 const exportGate = new ResourceGate()
 const backgroundLane = new BackgroundLane(exportGate)
+const broadcastMusicAnalysis = (payload) => {
+  for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:music-analysis-progress', payload)
+}
+const musicAnalysisService = app.whenReady().then(async () => {
+  const [ffmpeg, ffprobe] = await Promise.all([locateBinary('ffmpeg'), locateBinary('ffprobe')])
+  const service = new MusicAnalysisService({ root: path.join(app.getPath('userData'), 'music-analysis'), ffmpeg, ffprobe, gate: exportGate })
+  service.on('progress', broadcastMusicAnalysis)
+  await service.initialized
+  return service
+})
+registerMusicAnalysisIpc({ ipcMain, service: musicAnalysisService, authorize: authorizeExistingMedia })
 const batchManager = app.whenReady().then(async () => {
   const [ffmpeg, ffprobe] = await Promise.all([locateBinary('ffmpeg'), locateBinary('ffprobe')])
   const service = new BatchMixManager({ root: path.join(app.getPath('userData'), 'batch-mix'), ffmpeg, ffprobe, gate: exportGate })
@@ -1014,7 +1027,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   backgroundLane.stopping = true
   for (const job of activeJobs) { job.videomeCancelled = true; stopChild(job) }
-  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown()), whisperManager.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
+  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown()), whisperManager.then((service) => service.shutdown()), musicAnalysisService.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
 })
 
 app.on('window-all-closed', () => {

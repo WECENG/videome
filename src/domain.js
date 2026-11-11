@@ -113,6 +113,7 @@ export const makeMediaAsset = (path, metadata = {}) => ({
   name: metadata.name || path.split(/[\\/]/).pop() || '未命名素材',
   path: metadata.path === undefined ? path : metadata.path,
   size: metadata.size || 0,
+  mtimeMs: metadata.mtimeMs || null,
   duration: metadata.duration || 0,
   sourceDuration: metadata.sourceDuration || metadata.duration || 0,
   width: metadata.width || null,
@@ -781,14 +782,42 @@ export const assessExport = ({ assets, clips, tracks = [], preset, format, frame
   return { issues, ready: issues.every((issue) => issue.severity !== 'error') }
 }
 
-export const generateSuggestions = (music, { mood = 'sunny', tempo = 'mid', duration = 148 } = {}) => music
-  .map((track) => ({
-    ...track,
-    score: Math.round((track.mood === mood ? 38 : track.mood === 'versatile' ? 16 : 0) + (track.tempo === tempo ? 29 : track.tempo === 'flexible' ? 14 : 0) + Math.max(0, 18 - Math.abs(track.duration - duration) / 8) + (track.license ? 15 : 0)),
-  }))
+const musicFeatures = (track = {}) => ({
+  ...track,
+  ...(track.analysis || {}),
+  ...(track.musicOverrides || {}),
+  mood: track.musicOverrides?.mood || track.analysis?.mood || track.mood || 'versatile',
+  tempo: track.musicOverrides?.tempo || track.analysis?.tempo || track.tempo || 'flexible',
+  bpm: track.musicOverrides?.bpm ?? track.analysis?.bpm ?? track.bpm ?? null,
+  energy: track.musicOverrides?.energy ?? track.analysis?.energy ?? null,
+})
+
+const scorePart = (value, weight, available = true) => available ? { value, weight } : null
+
+export const generateSuggestions = (music, { mood = 'sunny', tempo = 'mid', duration = 148, videoAnalysis = null } = {}) => music
+  .map((rawTrack) => {
+    const track = musicFeatures(rawTrack)
+    const targetBpm = Number(videoAnalysis?.targetBpm) || (tempo === 'slow' ? 72 : tempo === 'fast' ? 124 : 96)
+    const targetEnergy = Number(videoAnalysis?.targetEnergy)
+    const expectedMood = videoAnalysis?.suggestedMood || mood
+    const parts = [
+      scorePart(Math.max(0, 15 - Math.abs(Number(track.duration || 0) - duration) / 12), 15, Number(track.duration) > 0),
+      scorePart(track.bpm ? Math.max(0, 25 - Math.abs(track.bpm - targetBpm) / 2.2) : (track.tempo === tempo ? 18 : track.tempo === 'flexible' ? 10 : 0), 25, Boolean(track.bpm || track.tempo)),
+      scorePart(targetEnergy != null && track.energy != null ? Math.max(0, 20 - Math.abs(track.energy - targetEnergy) * 20) : track.tempo === tempo ? 14 : 9, 20, Boolean(track.energy != null || track.tempo)),
+      scorePart(track.mood === expectedMood ? 20 : track.mood === 'versatile' ? 10 : 3, 20, Boolean(track.mood)),
+      scorePart(videoAnalysis?.dialogueRatio > 0.45 ? (track.dynamicRange != null ? Math.max(0, 20 - track.dynamicRange * 28) : track.tempo === 'slow' ? 15 : 9) : 14, 20, videoAnalysis?.dialogueRatio != null),
+    ].filter(Boolean)
+    const score = parts.length ? Math.round(parts.reduce((sum, part) => sum + part.value, 0) / parts.reduce((total, item) => total + item.weight, 0) * 100) : 0
+    const reasons = []
+    if (track.bpm) reasons.push(Math.abs(track.bpm - targetBpm) < 12 ? 'BPM 接近当前镜头节奏' : '节奏适合镜头变化')
+    if (videoAnalysis?.dialogueRatio > 0.45 && (track.dynamicRange == null || track.dynamicRange < 0.35)) reasons.push('对白密度较高，音乐动态较平稳')
+    if (track.mood === expectedMood) reasons.push('氛围和画面倾向匹配')
+    if (Math.abs(Number(track.duration || 0) - duration) < 20) reasons.push('时长接近当前工程')
+    if (!track.analysis && !track.musicOverrides) reasons.push('部分特征尚未完成分析')
+    return { ...rawTrack, ...track, score, confidence: track.analysis?.status === 'ready' || track.musicOverrides ? 'high' : 'low', reason: reasons.slice(0, 2).join(' · ') || '可作为情绪备选' }
+  })
   .sort((first, second) => second.score - first.score)
   .slice(0, 3)
-  .map((track) => ({ ...track, reason: track.mood === mood && track.tempo === tempo ? '情绪与节奏都匹配' : track.mood === mood ? '内容氛围相近' : track.tempo === tempo ? '节奏适合镜头变化' : '可作为情绪反差备选' }))
 
 export const calculateWaveform = (seed, bars = 88) => {
   let state = 0

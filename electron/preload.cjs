@@ -18,6 +18,15 @@ contextBridge.exposeInMainWorld('videome', {
   pickSubtitles: () => ipcRenderer.invoke('videome:pick-srt'),
   saveText: (payload) => ipcRenderer.invoke('videome:save-strings', payload),
   probeMedia: (paths, options) => ipcRenderer.invoke('videome:probe-media', paths, options),
+  musicAnalysisStatus: () => ipcRenderer.invoke('videome:music-status'),
+  analyzeMusicAssets: (payload) => ipcRenderer.invoke('videome:music-analyze-assets', payload),
+  analyzeMusicVideo: (payload) => ipcRenderer.invoke('videome:music-analyze-video', payload),
+  cancelMusicAnalysis: () => ipcRenderer.invoke('videome:music-cancel-analysis'),
+  onMusicAnalysisProgress(callback) {
+    const handler = (_event, payload) => callback(payload)
+    ipcRenderer.on('videome:music-analysis-progress', handler)
+    return () => ipcRenderer.removeListener('videome:music-analysis-progress', handler)
+  },
   requestMedia: (paths) => ipcRenderer.invoke('videome:request-media', paths),
   createPreviewProxy: (sourcePath) => ipcRenderer.invoke('videome:create-preview-proxy', sourcePath),
   generatePreviewFrames: (paths) => ipcRenderer.invoke('videome:emit-preview-frames', paths),

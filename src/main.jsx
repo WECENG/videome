@@ -175,6 +175,16 @@ function App() {
   const [exportPreset, setExportPreset] = useState(() => project?.exportSettings?.preset || 'high')
   const [exportFormat, setExportFormat] = useState(() => project?.exportSettings?.format || 'mp4')
   const [search, setSearch] = useState('')
+  const [musicSearch, setMusicSearch] = useState('')
+  const [musicFilter, setMusicFilter] = useState('all')
+  const [selectedMusicId, setSelectedMusicId] = useState(null)
+  const [musicMixDrafts, setMusicMixDrafts] = useState({})
+  const [musicPreviewProgress, setMusicPreviewProgress] = useState(0)
+  const [musicAdvancedOpen, setMusicAdvancedOpen] = useState(false)
+  const [musicAnalysisState, setMusicAnalysisState] = useState('ready')
+  const [musicAnalysisVersion, setMusicAnalysisVersion] = useState(0)
+  const [videoAnalysis, setVideoAnalysis] = useState(null)
+  const [videoAnalysisVersion, setVideoAnalysisVersion] = useState(0)
   const [assetMenuId, setAssetMenuId] = useState(null)
   const [timelineMenu, setTimelineMenu] = useState(null)
   const [deleteTrackId, setDeleteTrackId] = useState(null)
@@ -182,7 +192,9 @@ function App() {
   const [mood, setMood] = useState('sunny')
   const [tempo, setTempo] = useState('mid')
   const [volumeTarget, setVolumeTarget] = useState(0.22)
-  const transportAudio = useRef(null)
+  const musicPreviewRef = useRef(null)
+  const musicAnalysisRequestedRef = useRef(new Set())
+  const videoAnalysisKeyRef = useRef(null)
   const [saving, setSaving] = useState(false)
   const [projectPath, setProjectPath] = useState(() => readProjectSession(localStorage).path)
   const [showProjectMenu, setShowProjectMenu] = useState(false)
@@ -213,7 +225,6 @@ function App() {
   const [density, setDensity] = useState(false)
   const previewDurationRef = useRef(new Map())
   const fileInputRef = useRef(null)
-  const audioRef = useRef(null)
   const timelineRef = useRef(null)
   const trackListRef = useRef(null)
   const objectUrlsRef = useRef(new Set())
@@ -223,7 +234,6 @@ function App() {
   const playLoopRef = useRef(null)
   const subtitleAuditionRef = useRef(null)
   const workspaceRef = useRef(null)
-  const audioFrameRef = useRef(0)
   const browserSessionRef = useRef(null)
   const previewAttemptRef = useRef(new Set())
   const previewReadyRef = useRef(new Map())
@@ -310,11 +320,21 @@ function App() {
   }, [project.clips, selectedClipIds, selectedId])
   const exampleMode = isExampleProject(project)
   const filteredAssets = assets.filter((asset) => `${asset.name} ${asset.kind} ${asset.codec || ''}`.toLowerCase().includes(search.toLowerCase()))
-    const suggestions = generateSuggestions(musicFiles, { mood, tempo, duration })
+  const suggestions = useMemo(() => generateSuggestions(musicFiles, { mood, tempo, duration, videoAnalysis }), [musicFiles, mood, tempo, duration, videoAnalysis, musicAnalysisVersion])
+  const selectedMusic = musicFiles.find((music) => music.id === selectedMusicId) || suggestions[0] || null
+  const currentMusicClip = project.clips.find((clip) => isBackgroundMusicClip(clip, project)) || null
+  const currentMusic = currentMusicClip ? musicFiles.find((music) => music.id === currentMusicClip.assetId) || null : null
   const exportSnapshot = useMemo(() => project, [project])
   const exportAssessment = useMemo(() => assessExport({ assets: project.assets, clips: project.clips, tracks: project.tracks, preset: exportPreset, format: exportFormat, frameSize: project.frameSize }), [project, exportPreset, exportFormat])
   const estimateBytes = exportEstimate({ duration, bitrateMbps: safeExportSettings.videoBitrateMbps, audioBitrateKbps: safeExportSettings.audioBitrateKbps, preset: exportPreset })
   const warning = selectedClip ? findStreamCopyIssue({ preset: exportPreset, format: exportFormat, clip: selectedClip, track: project.tracks.find((track) => track.id === selectedClip.trackId), subtitle: project.subtitle }) : null
+
+  function isBackgroundMusicClip(clip, currentProject = projectRef.current) {
+    if (!clip || clip.kind !== 'audio' || clip.linkedClipId) return false
+    if (clip.isMusic === true) return true
+    const track = currentProject?.tracks?.find((item) => item.id === clip.trackId)
+    return Boolean(track?.label && /背景音乐|background\s*music|\bmusic\b/i.test(track.label))
+  }
 
   useEffect(() => {
     if (!selectedClip) {
@@ -446,8 +466,72 @@ function App() {
       mood: 'versatile', tempo: 'flexible', genre: '本地音乐', license: null, volume: 0.22,
       ...current.find((music) => music.id === asset.id),
       sourcePath: asset.path, previewUrl: asset.previewUrl, duration: asset.duration || 0,
+      analysis: asset.analysis || current.find((music) => music.id === asset.id)?.analysis || null,
+      musicOverrides: asset.musicOverrides || current.find((music) => music.id === asset.id)?.musicOverrides || null,
     })))
   }, [assets])
+
+  useEffect(() => {
+    if (!window.videome?.analyzeMusicAssets) return undefined
+    const paths = assets.filter((asset) => asset.kind === 'audio' && !asset.dubbingSource && asset.path && !musicAnalysisRequestedRef.current.has(asset.path)).map((asset) => asset.path)
+    if (!paths.length) return undefined
+    paths.forEach((filePath) => {
+      musicAnalysisRequestedRef.current.add(filePath)
+      setMusicFiles((current) => current.map((music) => music.sourcePath === filePath ? { ...music, analysis: { ...(music.analysis || {}), status: 'pending' } } : music))
+    })
+    void window.videome.analyzeMusicAssets({ paths }).then((response) => {
+      if (!response?.ok) setStatus(`本机音乐分析不可用：${response?.reason || '请检查 FFmpeg。'}`, 'info')
+    }).catch((error) => setStatus(`本机音乐分析不可用：${error.message}`, 'info'))
+    return undefined
+  }, [assets])
+
+  useEffect(() => {
+    if (activeTab !== 'music') {
+      if (musicPreviewRef.current) stopMusicPreview()
+      return
+    }
+    if (!selectedMusicId) setSelectedMusicId(currentMusicClip?.assetId || suggestions[0]?.id || null)
+    if (selectedMusicId && !musicFiles.some((music) => music.id === selectedMusicId)) setSelectedMusicId(suggestions[0]?.id || null)
+  }, [activeTab, currentMusicClip?.assetId, musicFiles, selectedMusicId, suggestions])
+
+  useEffect(() => {
+    if (!window.videome?.onMusicAnalysisProgress) return undefined
+    return window.videome.onMusicAnalysisProgress((payload) => {
+      if (payload?.type !== 'asset' || !payload.path) return
+      if (payload.status === 'analyzing') {
+        setMusicFiles((current) => current.map((music) => music.sourcePath === payload.path ? { ...music, analysis: { ...(music.analysis || {}), status: 'analyzing' } } : music))
+        return
+      }
+      const analysis = payload.status === 'ready' ? { ...payload.result, status: 'ready' } : { status: 'failed', error: payload.reason || '识别失败' }
+      setMusicFiles((current) => current.map((music) => music.sourcePath === payload.path
+        ? { ...music, analysis }
+        : music))
+      setMusicAnalysisVersion((value) => value + 1)
+      if (payload.status === 'failed') setStatus(`${pathBasename(payload.path)}：音乐识别失败，可手动修正标签。`, 'info')
+    })
+  }, [])
+
+  useEffect(() => {
+    if (activeTab !== 'music' || !window.videome?.analyzeMusicVideo) return undefined
+    const videos = project.clips.filter((clip) => clip.kind === 'video').map((clip) => {
+      const asset = project.assets.find((item) => item.id === clip.assetId)
+      return asset?.path ? { path: asset.path, start: clip.start, duration: clip.duration, trimStart: clip.trimStart || 0 } : null
+    }).filter(Boolean)
+    const key = JSON.stringify({ projectId: project.projectId, duration: project.duration, videos, version: videoAnalysisVersion })
+    if (!videos.length || videoAnalysisKeyRef.current === key) return undefined
+    videoAnalysisKeyRef.current = key
+    let cancelled = false
+    setVideoAnalysis((current) => ({ ...(current || {}), status: 'analyzing' }))
+    void window.videome.analyzeMusicVideo({ duration: project.duration, videos }).then((response) => {
+      if (cancelled || videoAnalysisKeyRef.current !== key) return
+      if (response?.ok && response.value) setVideoAnalysis(response.value)
+      else setVideoAnalysis((current) => ({ ...(current || {}), status: 'failed', error: response?.reason || '视频识别失败' }))
+      setMusicAnalysisVersion((value) => value + 1)
+    }).catch((error) => {
+      if (!cancelled) setVideoAnalysis((current) => ({ ...(current || {}), status: 'failed', error: error.message }))
+    })
+    return () => { cancelled = true }
+  }, [activeTab, project.projectId, project.duration, project.clips, project.assets, videoAnalysisVersion])
 
   useEffect(() => {
     document.title = `${project.name || 'Videome'} — Videome Studio`
@@ -586,9 +670,8 @@ function App() {
       objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
       objectUrlsRef.current.clear()
       if (playerRef.current) playerRef.current.pause()
-      if (audioRef.current) audioRef.current.pause()
+      if (musicPreviewRef.current?.audio) musicPreviewRef.current.audio.pause()
       if (playLoopRef.current) window.cancelAnimationFrame(playLoopRef.current)
-      if (audioFrameRef.current) window.cancelAnimationFrame(audioFrameRef.current)
       if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current)
     }
   }, [])
@@ -618,7 +701,7 @@ function App() {
   function removeAsset(asset) {
     const current = projectRef.current
     const references = current.clips.filter((clip) => clip.assetId === asset.id)
-    if (references.length && !window.confirm(`「${asset.name}」正在时间线上使用，将同时移除 ${references.length} 个片段。\n只从工程素材库移除，不会删除磁盘上的原始文件。继续？`)) return
+    if (references.length && !window.confirm(`「${asset.name}」正在时间线上使用，将同时移除 ${references.length} 个片段。\n只从工程素材库移除，不会删除磁盘上的原始文件。继续？`)) return false
 
     const nextProject = removeAssetReferences(current, asset.id)
     applyEdit('从素材库移除素材', (projectState) => removeAssetReferences(projectState, asset.id), assets)
@@ -629,6 +712,51 @@ function App() {
     safeStorageWrite('videome-assets', nextProject.assets)
     if (selectedId && !nextProject.clips.some((clip) => clip.id === selectedId)) setSelectedId(null)
     setStatus(references.length ? `已移除素材及其 ${references.length} 个时间线片段；原文件未删除。` : `已从素材库移除「${asset.name}」；原文件未删除。`)
+    return true
+  }
+
+  function clearMusicLibrary() {
+    const current = projectRef.current
+    const libraryMusicAssets = [...new Map(
+      [...assets, ...(current.assets || [])]
+        .filter((asset) => asset.kind === 'audio' && !asset.dubbingSource)
+        .map((asset) => [asset.id, asset]),
+    ).values()]
+    if (!libraryMusicAssets.length) {
+      setStatus('我的曲库已经是空的。', 'info')
+      return
+    }
+
+    const musicAssetIds = new Set(libraryMusicAssets.map((asset) => asset.id))
+    const nextProject = [...musicAssetIds].reduce((next, assetId) => removeAssetReferences(next, assetId), current)
+    const removedClipIds = new Set(current.clips.filter((clip) => !nextProject.clips.some((item) => item.id === clip.id)).map((clip) => clip.id))
+    if (!window.confirm(`确定清空我的曲库中的 ${libraryMusicAssets.length} 首音乐吗？${removedClipIds.size ? `同时移除时间线上的 ${removedClipIds.size} 个引用片段。` : ''}\n只从曲库和工程引用中移除，不会删除磁盘上的原始文件。此操作可撤销。`)) return
+
+    if (musicPreviewRef.current) stopMusicPreview({ pausePlayback: false })
+    applyEdit('清空我的曲库', () => nextProject, assets)
+    setAssets((existing) => existing.filter((asset) => !musicAssetIds.has(asset.id)))
+    setSelectedMusicId(null)
+    updateSelectedAssetIds(selectedAssetIdsRef.current.filter((id) => !musicAssetIds.has(id)))
+    updateSelectedClipIds(selectedClipIdsRef.current.filter((id) => !removedClipIds.has(id)))
+    setAssetMenuId(null)
+    safeStorageWrite('videome-assets', nextProject.assets)
+    if (selectedId && removedClipIds.has(selectedId)) setSelectedId(null)
+    setStatus(`已清空我的曲库中的 ${libraryMusicAssets.length} 首音乐${removedClipIds.size ? `及 ${removedClipIds.size} 个时间线引用片段` : ''}；原文件未删除。`, 'info')
+  }
+
+  function removeMusicFromLibrary(music) {
+    const asset = projectRef.current.assets.find((item) => item.id === music.id || item.path === music.sourcePath)
+      || assets.find((item) => item.id === music.id || item.path === music.sourcePath)
+    if (!asset) {
+      setStatus(`找不到「${music.name}」的素材记录。`, 'error')
+      return
+    }
+
+    if (recordingMusic === music.id || recordingMusic === asset.id) stopMusicPreview()
+    if (removeAsset(asset)) {
+      if (selectedMusicId === music.id || selectedMusicId === asset.id) setSelectedMusicId(null)
+      setAssetMenuId(null)
+    }
   }
 
   function clearMediaLibrary() {
@@ -755,6 +883,7 @@ function App() {
         pendingVideoSeekRef.current = null
       }
       syncTimelineAudio(next, true, nextProject, true)
+      syncMusicPreviewAudio(next, nextProject, true)
     }
     projectRef.current = { ...projectRef.current, playhead: next }
     setProject((current) => ({ ...current, playhead: next }))
@@ -1543,14 +1672,41 @@ function App() {
     appendMusicClip(source, music)
   }
 
+  function getMusicMixSettings(music, clip = null) {
+    const draft = music ? musicMixDrafts[music.id] || {} : {}
+    const source = clip || draft
+    const sourceDuration = Number(music?.duration || clip?.sourceDuration || 0)
+    const trimStart = Math.max(0, Math.min(Math.max(0, sourceDuration - 0.2), Number(source.trimStart) || 0))
+    const repeat = source.repeat ?? true
+    const videoEnd = Math.max(0, ...project.clips.filter((item) => ['video', 'image'].includes(item.kind) && !item.muted && !project.tracks.find((track) => track.id === item.trackId)?.muted).map((item) => Number(item.start || 0) + Number(item.duration || 0)))
+    const timelineRemaining = Math.max(0.2, (videoEnd || duration) - Number(clip?.start || 0))
+    const availableSourceDuration = sourceDuration > 0 ? Math.max(0.2, sourceDuration - trimStart) : timelineRemaining
+    const defaultClipDuration = Math.min(timelineRemaining, availableSourceDuration)
+    const clipDuration = repeat
+      ? timelineRemaining
+      : Math.max(0.2, Math.min(timelineRemaining, availableSourceDuration, Number(source.duration) || defaultClipDuration))
+    return {
+      ...source,
+      volume: source.volume ?? Number(music?.volume ?? 0.22),
+      fadeIn: source.fadeIn ?? 1.2,
+      fadeOut: source.fadeOut ?? 4.5,
+      autoDuck: source.autoDuck ?? true,
+      repeat,
+      trimStart,
+      duration: clipDuration,
+    }
+  }
+
   function appendMusicClip(asset, music) {
     if (!asset.path) {
       setStatus('当前曲目只能预览，尚无可导出的本地源文件。', 'info')
       return
     }
+    if (musicPreviewRef.current) stopMusicPreview({ pausePlayback: false })
 
     let track = project.tracks.find((item) => item.id === 'audio-music' || (item.type === 'audio' && /背景|music/i.test(item.label)))
     if (!track) track = { id: 'audio-music', type: 'audio', label: '背景音乐', accent: 'blue', order: project.tracks.filter((item) => item.type === 'audio').length, locked: false, muted: false }
+    const mixSettings = getMusicMixSettings(music)
     const audioClip = {
       id: `clip-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
       assetId: asset.id,
@@ -1558,30 +1714,32 @@ function App() {
       trackId: track.id,
       name: `${music.name} · 自动音乐`,
       start: 0,
-      duration,
-      trimStart: 0,
-      trimEnd: duration,
-      sourceDuration: asset.duration || duration,
+      duration: mixSettings.duration,
+      trimStart: mixSettings.trimStart,
+      trimEnd: mixSettings.trimStart + mixSettings.duration,
+      sourceDuration: asset.duration || mixSettings.duration,
       kind: 'audio',
       color: track.accent,
-      volume: Number(music.volume ?? 0.22),
+      volume: mixSettings.volume,
       isMusic: true,
-      fadeIn: 1.2,
-      fadeOut: 4.5,
+      fadeIn: mixSettings.fadeIn,
+      fadeOut: mixSettings.fadeOut,
       tempo: music.tempo,
-      autoDuck: true,
-      repeat: asset.duration > 0 && duration > asset.duration,
+      autoDuck: mixSettings.autoDuck,
+      repeat: mixSettings.repeat,
     }
-    const nextClips = [...project.clips.filter((clip) => !clip.isMusic), audioClip]
+    const nextClips = [...project.clips.filter((clip) => !isBackgroundMusicClip(clip, project)), audioClip]
     const nextTracks = project.tracks.some((item) => item.id === track.id) ? project.tracks : [...project.tracks, track]
-    applyEdit('添加智能配乐', (current) => ({ ...current, tracks: nextTracks, clips: nextClips, assets: current.assets.some((item) => item.id === asset.id) ? current.assets : [...current.assets, asset], duration: Math.max(current.duration, audioClip.duration) }))
+    applyEdit(currentMusicClip ? '替换背景音乐' : '添加背景音乐', (current) => ({ ...current, tracks: nextTracks, clips: nextClips, assets: current.assets.some((item) => item.id === asset.id) ? current.assets : [...current.assets, asset], duration: Math.max(current.duration, audioClip.start + audioClip.duration) }))
     setVolumeTarget(audioClip.volume)
-    setActiveTab('edit')
+    setSelectedMusicId(music.id)
+    setActivePanel('音乐库')
+    setActiveTab('music')
     setActiveTrackId(track.id)
     updateSelectedClipIds([audioClip.id])
     timelineSelectionAnchorRef.current = audioClip.id
     setSelectedId(audioClip.id)
-    setStatus(`已添加「${music.name}」，自动混音、循环铺设并为人声预留空间。`)
+    setStatus(`${currentMusicClip ? '已替换' : '已添加'}「${music.name}」，自动铺设并为人声预留空间。`)
   }
 
   async function addMusicFiles() {
@@ -1610,43 +1768,184 @@ function App() {
       stopMusicPreview()
       return
     }
-    if (recordingMusic) stopMusicPreview()
-
-    if (!music.previewUrl) {
-      if (music.sourcePath && typeof Audio !== 'undefined') {
-        const audio = new Audio(fileUrl(music.sourcePath))
-        audioRef.current = audio
-        audio.play().catch(() => setStatus('无法读取这首本地音乐，请重新定位源文件。', 'error'))
-        setRecordingMusic(music.id)
-        transportAudio.current = audio
-        audio.addEventListener('ended', () => setRecordingMusic(null), { once: true })
+    stopMusicPreview({ pausePlayback: false })
+    const source = music.previewUrl || (music.sourcePath ? fileUrl(music.sourcePath) : null)
+    if (!source || typeof Audio === 'undefined') {
+      setStatus('这首曲目没有可用的本地试听源。', 'info')
+      return
+    }
+    const audio = new Audio(source)
+    const playhead = projectRef.current.playhead
+    const shouldStartPlayback = !liveTransportRef.current.playing
+    const finish = () => {
+      if (musicPreviewRef.current?.audio !== audio) return
+      musicPreviewRef.current = null
+      setRecordingMusic(null)
+      setMusicPreviewProgress(0)
+      syncTimelineAudio(projectRef.current.playhead, liveTransportRef.current.playing, projectRef.current, true)
+    }
+    musicPreviewRef.current = { audio, active: true, id: music.id }
+    audio.volume = 0
+    audio.preload = 'auto'
+    audio.addEventListener('loadedmetadata', () => {
+      syncMusicPreviewAudio(projectRef.current.playhead, projectRef.current, true)
+    }, { once: true })
+    audio.addEventListener('timeupdate', () => {
+      if (audio.duration > 0) setMusicPreviewProgress(audio.currentTime / audio.duration)
+    })
+    audio.addEventListener('ended', () => {
+      const currentPreview = musicPreviewRef.current
+      const currentClip = currentPreview?.audio === audio ? findMusicClipForPreview(music, projectRef.current) : null
+      if (currentPreview?.audio === audio && currentClip?.repeat && liveTransportRef.current.playing) {
+        audio.currentTime = Number(currentClip.trimStart) || 0
+        syncMusicPreviewAudio(projectRef.current.playhead, projectRef.current, true)
+        audio.play().catch(() => finish())
         return
       }
-      setStatus('添加音乐后可在时间轴预览。', 'info')
+      finish()
+    })
+    audio.addEventListener('error', () => {
+      finish()
+      setStatus('无法读取这首本地音乐，请重新定位源文件。', 'error')
+    }, { once: true })
+    setSelectedMusicId(music.id)
+    setRecordingMusic(music.id)
+    setMusicPreviewProgress(0)
+    if (shouldStartPlayback) {
+      liveTransportRef.current.playing = true
+      liveTransportRef.current.position = playhead
+      liveTransportRef.current.lastClock = 0
+    }
+    syncTimelineAudio(playhead, liveTransportRef.current.playing, projectRef.current, true)
+    syncMusicPreviewAudio(playhead, projectRef.current, true)
+    if (musicPreviewRef.current?.audio !== audio) return
+    if (playerRef.current && shouldStartPlayback) {
+      setPlaying(true)
+      playerRef.current.play().catch(() => {})
+    }
+    audio.play().catch(() => {
+      finish()
+      setStatus('系统未授权播放此试听，请在系统设置中检查音频权限。', 'info')
+    })
+  }
+
+  function stopMusicPreview({ pausePlayback = true } = {}) {
+    const preview = musicPreviewRef.current
+    if (preview?.audio) {
+      preview.audio.pause()
+      preview.audio.currentTime = 0
+    }
+    musicPreviewRef.current = null
+    setRecordingMusic(null)
+    setMusicPreviewProgress(0)
+    if (pausePlayback) {
+      liveTransportRef.current.playing = false
+      liveTransportRef.current.lastClock = 0
+      if (playLoopRef.current) window.cancelAnimationFrame(playLoopRef.current)
+      if (playerRef.current && !playerRef.current.paused) playerRef.current.pause()
+      setPlaying(false)
+      if (projectRef.current) syncTimelineAudio(projectRef.current.playhead, false, projectRef.current, true)
+      return
+    }
+    if (projectRef.current) syncTimelineAudio(projectRef.current.playhead, liveTransportRef.current.playing, projectRef.current, true)
+  }
+
+  function findMusicClipForPreview(music, currentProject) {
+    if (!music?.id || !currentProject) return null
+    const clip = currentProject.clips.find((item) => isBackgroundMusicClip(item, currentProject) && (
+      item.assetId === music.id
+      || item.path === music.sourcePath
+    ))
+    if (clip) return clip
+    const settings = getMusicMixSettings(music)
+    return {
+      ...settings,
+      id: `music-preview-${music.id}`,
+      assetId: music.id,
+      path: music.sourcePath,
+      start: 0,
+      duration: settings.duration,
+      trimStart: settings.trimStart,
+      trimEnd: settings.trimStart + settings.duration,
+      sourceDuration: Number(music.duration) || 0,
+      isMusic: true,
+    }
+  }
+
+  function isDialogueActiveAt(position, currentProject) {
+    const trackById = new Map((currentProject?.tracks || []).map((track) => [track.id, track]))
+    const audible = (clip) => {
+      const track = trackById.get(clip.trackId)
+      const volume = clip.dubbingSource && Number(clip.volume) <= 0 ? 0.82 : Number(clip.volume ?? 0.82)
+      return clip.kind === 'audio'
+        && !isBackgroundMusicClip(clip, currentProject)
+        && position >= Number(clip.start || 0)
+        && position < Number(clip.start || 0) + Number(clip.duration || 0)
+        && !clip.muted
+        && !track?.muted
+        && volume > 0
+    }
+    if ((currentProject?.clips || []).some(audible)) return true
+
+    const visual = findActiveVisualClip(currentProject, position)
+    if (!visual?.hasAudio || visual.suppressEmbeddedAudio || Number(visual.volume ?? 0.82) <= 0) return false
+    const linkedAudio = currentProject.clips.find((clip) => clip.kind === 'audio' && clip.linkedClipId === visual.id)
+    if (!linkedAudio) return true
+    const linkedTrack = trackById.get(linkedAudio.trackId)
+    const linkedVolume = linkedAudio.dubbingSource && Number(linkedAudio.volume) <= 0 ? 0.82 : Number(linkedAudio.volume ?? 0.82)
+    return !linkedAudio.muted && !linkedTrack?.muted && linkedVolume > 0
+  }
+
+  function musicMixGain(clip, position, currentProject) {
+    if (!clip) return 1
+    const offset = Math.max(0, position - Number(clip.start || 0))
+    const clipDuration = Math.max(0.001, Number(clip.duration || 0))
+    const fadeIn = Math.max(0, Number(clip.fadeIn || 0))
+    const fadeOut = Math.max(0, Number(clip.fadeOut || 0))
+    const fadeInGain = fadeIn > 0 ? Math.min(1, offset / fadeIn) : 1
+    const fadeOutGain = fadeOut > 0 ? Math.min(1, Math.max(0, (clipDuration - offset) / fadeOut)) : 1
+    const duckGain = clip.autoDuck !== false && isDialogueActiveAt(position, currentProject) ? 0.28 : 1
+    return Math.max(0, Math.min(1, fadeInGain * fadeOutGain * duckGain))
+  }
+
+  function loopedMusicSourceTime(clip, offset, sourceDuration) {
+    const trimStart = Math.max(0, Number(clip?.trimStart || 0))
+    const loopDuration = Math.max(0.04, sourceDuration - trimStart)
+    return trimStart + (Math.max(0, offset) % loopDuration)
+  }
+
+  function syncMusicPreviewAudio(position, currentProject, forceSeek = false) {
+    const preview = musicPreviewRef.current
+    const audio = preview?.audio
+    if (!preview?.active || !audio) return
+
+    const music = musicFiles.find((item) => item.id === preview.id)
+    const clip = findMusicClipForPreview(music, currentProject)
+    const sourceDuration = Number(audio.duration || clip?.sourceDuration || music?.duration || 0)
+    const timelineOffset = clip ? position - Number(clip.start || 0) : position
+    const clipActive = !clip || (timelineOffset >= 0 && timelineOffset < Number(clip.duration || duration))
+    if (!clipActive) {
+      stopMusicPreview({ pausePlayback: false })
       return
     }
 
-    const audio = new Audio(music.previewUrl)
-    audio.volume = 0.45
-    audioRef.current = audio
-    transportAudio.current = null
-    audio.addEventListener('error', () => {
-      setRecordingMusic(null)
-      setStatus('网络试听失败；你仍可导入本地曲库并继续制作。', 'info')
-    }, { once: true })
-    audio.addEventListener('ended', () => setRecordingMusic(null), { once: true })
-    audio.play().then(() => setRecordingMusic(music.id)).catch(() => setStatus('系统未授权播放此试听，请在系统设置中检查音频权限。', 'info'))
+    const trimStart = Math.max(0, Number(clip?.trimStart || 0))
+    const offset = Math.max(0, timelineOffset)
+    const sourceTime = clip?.repeat && sourceDuration > 0
+      ? loopedMusicSourceTime(clip, offset, sourceDuration)
+      : Math.min(trimStart + offset, Math.max(trimStart, sourceDuration - 0.04))
+    if (Number.isFinite(sourceTime) && (forceSeek || Math.abs(audio.currentTime - sourceTime) > 0.35)) audio.currentTime = sourceTime
+
+    const baseVolume = Number(clip?.volume ?? music?.volume ?? 0.22)
+    const gain = clip ? musicMixGain(clip, position, currentProject) : 1
+    audio.volume = Math.max(0, Math.min(1, baseVolume * gain))
+    if (liveTransportRef.current.playing && audio.paused && !audio.ended) audio.play().catch(() => {})
   }
 
-  function stopMusicPreview() {
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-    }
-    audioRef.current = null
-    transportAudio.current = null
-    setRecordingMusic(null)
-  }
+  useEffect(() => {
+    if (!musicPreviewRef.current?.active) return
+    syncMusicPreviewAudio(project.playhead, project, false)
+  }, [project.playhead, project.clips, project.tracks, musicFiles, musicMixDrafts])
 
   function addTrackCommand(type) {
     const nextTracks = addTrack(projectRef.current.tracks, type)
@@ -2159,6 +2458,7 @@ function App() {
     if (liveTransportRef.current.playing) {
       liveTransportRef.current.playing = false
       if (video && !video.paused) video.pause()
+      if (recordingMusic) stopMusicPreview()
       syncTimelineAudio(stateProject.playhead, false, stateProject)
       setPlaying(false)
       return
@@ -2322,10 +2622,13 @@ function App() {
     }
     const activeIds = new Set()
     const effectiveVolume = (clip) => clip.dubbingSource && Number(clip.volume) <= 0 ? 0.82 : Number(clip.volume ?? 0.82)
+    const outputVolume = (clip) => Math.max(0, Math.min(1, effectiveVolume(clip) * (isBackgroundMusicClip(clip, currentProject) ? musicMixGain(clip, position, currentProject) : 1)))
     const activeClips = clips.filter((clip) => {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       return position >= clip.start && position < clip.start + clip.duration
         && !clip.muted && !track?.muted && effectiveVolume(clip) > 0
+        && outputVolume(clip) > 0
+        && !(musicPreviewRef.current?.active && isBackgroundMusicClip(clip, currentProject))
     })
     const audioSignature = JSON.stringify(activeClips.map((clip) => {
       // A generated dubbing asset receives its playable videome-media URL
@@ -2333,7 +2636,7 @@ function App() {
       // the signature so a failed first attempt using the fallback browser URL
       // is replaced as soon as the authorized local URL is available.
       const asset = currentProject.assets.find((item) => item.id === clip.assetId)
-      return [clip.id, clip.start, clip.trimStart || 0, effectiveVolume(clip), timelineAudioSource(asset, clip)]
+      return [clip.id, clip.start, clip.trimStart || 0, outputVolume(clip), timelineAudioSource(asset, clip)]
     }))
     if (!forceSeek && shouldPlay && activeTimelineAudioSignatureRef.current === audioSignature) {
       const allActivePlayersRunning = activeClips.every((clip) => {
@@ -2349,6 +2652,8 @@ function App() {
       const track = currentProject.tracks.find((item) => item.id === clip.trackId)
       const active = position >= clip.start && position < clip.start + clip.duration
         && !clip.muted && !track?.muted && effectiveVolume(clip) > 0
+        && outputVolume(clip) > 0
+        && !(musicPreviewRef.current?.active && isBackgroundMusicClip(clip, currentProject))
       const asset = currentProject.assets.find((item) => item.id === clip.assetId)
       const source = timelineAudioSource(asset, clip)
       if (!source) requestTimelineMedia(asset)
@@ -2388,9 +2693,11 @@ function App() {
       const player = entry.player
       const offset = Math.max(0, (clip.trimStart || 0) + position - clip.start)
       const sourceDuration = Number(clip.sourceDuration || asset?.duration || player.duration || 0)
-      const sourceTime = clip.repeat && sourceDuration > 0 ? offset % sourceDuration : Math.min(offset, Math.max(0, (player.duration || sourceDuration || offset) - 0.04))
+      const sourceTime = clip.repeat && sourceDuration > 0
+        ? loopedMusicSourceTime(clip, Math.max(0, position - clip.start), sourceDuration)
+        : Math.min(offset, Math.max(0, (player.duration || sourceDuration || offset) - 0.04))
       if (Number.isFinite(sourceTime) && (forceSeek || Math.abs(player.currentTime - sourceTime) > (shouldPlay ? 0.35 : 0.04))) player.currentTime = sourceTime
-      player.volume = Math.max(0, Math.min(1, effectiveVolume(clip)))
+      player.volume = outputVolume(clip)
       player.muted = false
       entry.wantToPlay = shouldPlay
 
@@ -2459,37 +2766,13 @@ function App() {
     }
   }, [playing, findActiveVisualClip(project, project.playhead)?.id, project.assets, project.frameRate.numerator])
 
-  useEffect(() => {
-    const audio = transportAudio.current
-    if (!audio || !playing) return undefined
-    if (audioFrameRef.current) window.cancelAnimationFrame(audioFrameRef.current)
-    let last = performance.now()
-    const update = (time) => {
-      const delta = Math.max(0, Math.min((time - last) / 1000, 0.1))
-      last = time
-      if (!audio.paused && audio.duration) {
-        try {
-          const next = audio.currentTime + delta
-          if (Number.isFinite(next)) audio.currentTime = next % audio.duration
-        } catch {
-          // Preview playback is optional; keep the editing cursor responsive if browsers reject seeks.
-        }
-      }
-      audioFrameRef.current = window.requestAnimationFrame(update)
-    }
-    audioFrameRef.current = window.requestAnimationFrame(update)
-    return () => {
-      if (audioFrameRef.current) window.cancelAnimationFrame(audioFrameRef.current)
-    }
-  }, [playing])
-
   function renderTimelineClip(clip, track, trackIndex, clipIndex) {
     if (clip.kind === 'subtitle') {
       const cue = project.subtitle.cues.find((item) => item.id === subtitleClipCueId(clip))
       if (cue) clip = { ...clip, name: cue.text }
     }
     const left = (clip.start / duration) * timelineContentWidth
-    const width = Math.max(28, (clip.duration / duration) * timelineContentWidth)
+    const width = Math.max(0, (clip.duration / duration) * timelineContentWidth)
     const selected = selectedClipIds.length ? selectedClipIds.includes(clip.id) : clip.id === selectedId
     const sequenceOrder = selectedClipIds.indexOf(clip.id) + 1
     const isImageClip = clip.kind === 'image' || clip.previewColor === 'green'
@@ -2506,7 +2789,7 @@ function App() {
     return (
       <div
         key={clip.id}
-        className={`timeline-clip clip-${clip.color || track.accent} ${selected ? 'is-selected' : ''} ${clip.missing ? 'is-missing' : ''} ${clip.kind === 'subtitle' ? 'subtitle-clip' : ''} ${isMusic ? 'music-clip' : ''} ${clip.kind === 'graphics' ? 'graphics-clip' : ''}`}
+        className={`timeline-clip clip-${clip.color || track.accent} ${width < 28 ? 'clip-compact' : ''} ${selected ? 'is-selected' : ''} ${clip.missing ? 'is-missing' : ''} ${clip.kind === 'subtitle' ? 'subtitle-clip' : ''} ${isMusic ? 'music-clip' : ''} ${clip.kind === 'graphics' ? 'graphics-clip' : ''}`}
         data-clip-id={clip.id}
         style={{ left: `${left}px`, width: `${width}px`, '--clip-index': clipIndex, '--clip-width': `${width}px`, ...(isImageClip ? { background: previewBackground(clip.previewColor) } : {}) }}
         onPointerDown={(event) => handleTimelinePointerDown(event, track.id, clip, track)}
@@ -2724,8 +3007,8 @@ function App() {
 
   function renderMediaLibrary() {
     return (
-      <section className="asset-panel" aria-label="素材库">
-        <div className="panel-header"><div><span className="eyebrow">ASSET LIBRARY</span><h2>素材库</h2></div><button className="icon-button compact" aria-label="导入素材" title="导入素材" onClick={() => openPicker()}><Plus size={16} /></button></div>
+      <section className={`asset-panel ${activePanel === '音乐库' ? 'asset-panel-music' : ''}`} aria-label={activePanel === '音乐库' ? '我的曲库' : '素材库'}>
+        <div className="panel-header"><div><span className="eyebrow">{activePanel === '音乐库' ? 'MUSIC LIBRARY' : 'ASSET LIBRARY'}</span><h2>{activePanel === '音乐库' ? '我的曲库' : '素材库'}</h2></div><button className="icon-button compact" aria-label={activePanel === '音乐库' ? '导入音乐' : '导入素材'} title={activePanel === '音乐库' ? '导入音乐' : '导入素材'} onClick={() => activePanel === '音乐库' ? addMusicFiles() : openPicker()}><Plus size={16} /></button></div>
         <div className="library-tabs"><button className={activePanel !== '音乐库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('素材库')}>全部素材<span>{assets.length}</span></button><button className={activePanel === '音乐库' ? 'library-tab active' : 'library-tab'} onClick={() => setActivePanel('音乐库')}>我的曲库<span>{musicFiles.length}</span></button></div>
         {activePanel !== '音乐库' ? (
           <>
@@ -2755,11 +3038,59 @@ function App() {
   }
 
   function renderMusicLibrary() {
-    return <div className="music-library-panel"><div className="music-library-intro"><div className="music-mini-icon"><Music2 size={18} /></div><p>只匹配你自己的授权音乐。曲库分析和推荐完全在本机进行。</p><span><CloudOff size={12} /> 未上传素材</span></div><label className="music-search"><Search size={14} /><input placeholder="搜索曲目 · 风格 · BPM" value={search} onChange={(event) => setSearch(event.target.value)} aria-label="搜索曲库" /></label>{musicFiles.filter((music) => `${music.name} ${music.artist} ${music.genre}`.toLowerCase().includes(search.toLowerCase())).map((music, index) => <div className="music-library-card" key={music.id}><button className="library-play" aria-label={`${recordingMusic === music.id ? '停止' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={14} /> : <Play size={14} fill="currentColor" />}</button><div className="music-library-card-copy"><b>{music.name}</b><span>{music.genre} · {music.bpm ? `${music.bpm} BPM` : '节奏待分析'}</span></div><div className="license-mark" title={music.license || '尚未确认使用许可'} style={{ color: music.license ? '#72ad81' : '#cf9367' }}>{music.license ? <BadgeCheck size={15} /> : <Info size={14} />}</div><button className="mini-add" aria-label={`使用 ${music.name}`} onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}{!musicFiles.length && <div className="empty-library">曲库为空，导入自己的音频文件后即可试听和配乐。</div>}<button className="library-add-music" onClick={addMusicFiles}><Plus size={14} />导入已授权的音乐文件</button></div>
+    const filteredMusic = musicFiles.filter((music) => {
+      const query = musicSearch.trim().toLowerCase()
+      const matchesQuery = !query || `${music.name} ${music.artist} ${music.genre} ${music.bpm || ''}`.toLowerCase().includes(query)
+      const matchesFilter = musicFilter === 'all' || (musicFilter === 'licensed' ? Boolean(music.license) : !music.license)
+      return matchesQuery && matchesFilter
+    })
+    return <div className="music-library-panel">
+      <div className="music-library-intro"><div className="music-library-intro-top"><div className="music-mini-icon"><Music2 size={18} /></div><span className="music-library-count">{musicFiles.length} 首本地音乐</span></div><p>只匹配你自己的音乐。推荐、分析和试听都在本机完成。</p><span><CloudOff size={12} /> 未上传素材</span></div>
+      <div className="music-library-actions"><button className="music-import-primary" onClick={addMusicFiles}><Plus size={14} />导入音乐</button><button className="music-clear-timeline" disabled={!musicFiles.length} title={musicFiles.length ? '清空我的曲库（不会删除原文件）' : '我的曲库已经是空的'} onClick={clearMusicLibrary}><Trash2 size={13} />清空</button></div>
+      <label className="music-search"><Search size={14} /><input placeholder="搜索曲目 · 风格 · BPM" value={musicSearch} onChange={(event) => setMusicSearch(event.target.value)} aria-label="搜索曲库" /><kbd>{musicFiles.length}</kbd></label>
+      <div className="music-filter-row" role="tablist" aria-label="曲库筛选"><button className={musicFilter === 'all' ? 'active' : ''} onClick={() => setMusicFilter('all')}>全部 <span>{musicFiles.length}</span></button><button className={musicFilter === 'licensed' ? 'active' : ''} onClick={() => setMusicFilter('licensed')}>已确认 <span>{musicFiles.filter((music) => music.license).length}</span></button><button className={musicFilter === 'pending' ? 'active' : ''} onClick={() => setMusicFilter('pending')}>待确认 <span>{musicFiles.filter((music) => !music.license).length}</span></button></div>
+      <div className="music-library-list">{filteredMusic.map((music, index) => {
+        const inTimeline = project.clips.some((clip) => isBackgroundMusicClip(clip, project) && clip.assetId === music.id)
+        const isSelected = selectedMusicId === music.id
+        return <div className={`music-library-card ${isSelected ? 'is-selected' : ''}`} key={music.id} onClick={() => setSelectedMusicId(music.id)}><button className={`library-play ${recordingMusic === music.id ? 'is-playing' : ''}`} aria-label={`${recordingMusic === music.id ? '停止' : '试听'} ${music.name}`} onClick={(event) => { event.stopPropagation(); toggleMusicPreview(music) }}>{recordingMusic === music.id ? <Pause size={14} /> : <Play size={14} fill="currentColor" />}</button><div className="music-library-card-art" style={{ '--music-hue': [48, 168, 218, 286][index % 4] }}><Music2 size={13} /></div><div className="music-library-card-copy"><b>{music.name}</b><span>{formatCompactTime(music.duration)} · {music.analysis?.bpm ? `${music.analysis.bpm} BPM` : music.bpm ? `${music.bpm} BPM` : 'BPM 待分析'} · {music.analysis?.mood || music.mood === 'versatile' ? (music.analysis?.mood || '待分析') : moodLabel(music.mood)}</span></div><span className={`music-analysis-pill ${music.analysis?.status === 'failed' ? 'failed' : music.analysis?.status === 'ready' ? 'ready' : 'pending'}`}>{music.analysis?.status === 'ready' ? `${Math.round((music.analysis.energy || 0) * 100)}% 能量` : music.analysis?.status === 'failed' ? '识别失败' : '分析中'}</span><div className={`music-license-dot ${music.license ? 'licensed' : ''}`} title={music.license || '尚未确认使用许可'}>{music.license ? <BadgeCheck size={14} /> : <Info size={13} />}</div>{inTimeline ? <span className="music-in-use">已用</span> : null}<button className="mini-add" aria-label={`使用 ${music.name}`} title="使用这首音乐" onClick={(event) => { event.stopPropagation(); addMusicToTimeline(music) }}><Plus size={14} /></button><button className="music-delete-button" aria-label={`删除 ${music.name}`} title="从曲库移除，不会删除原文件" onClick={(event) => { event.stopPropagation(); removeMusicFromLibrary(music) }}><Trash2 size={13} /></button></div>
+      })}</div>
+      {!filteredMusic.length && <div className="music-empty-state"><Music2 size={19} /><b>{musicFiles.length ? '没有匹配的曲目' : '曲库还是空的'}</b><span>{musicFiles.length ? '试试其他关键词或筛选条件。' : '导入一首音乐，开始为当前视频匹配声音。'}</span>{!musicFiles.length && <button onClick={addMusicFiles}><Plus size={13} />导入第一首音乐</button>}</div>}
+    </div>
   }
 
   function renderEditorToolbar() {
     return <div className="editor-toolbar"><div className="mode-rail">{FEATURE_TABS.map(({ id, label, icon: Icon }) => <button key={id} className={`mode-button ${activeTab === id ? 'mode-active' : ''}`} onClick={() => { setActiveTab(id); setActivePanel(id === 'music' ? '音乐库' : '属性检查器') }}><Icon size={14} />{label}</button>)}</div><div className="toolbar-divider" /><button className="toolbar-tool" onClick={() => { setInspectorCollapsed(false); setShowDubbing(true) }}><Mic size={13} /><span>智能配音</span></button><button className="toolbar-tool" onClick={splitAtPlayhead}><Scissors size={13} /><span>分割</span><kbd>S</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(false)}><Trash2 size={13} /><span>删除</span><kbd>⌫</kbd></button><button className="toolbar-tool" onClick={() => removeSelected(true)}><Unlink2 size={13} /><span>波纹</span></button><button className="toolbar-tool" onClick={toggleClipLink} disabled={!selectedClip || (selectedClip.kind !== 'video' && !selectedClip.linkedClipId && !selectedClip.audioLinked)}><Unlink2 size={13} /><span>{selectedClip?.linkedClipId || selectedClip?.audioLinked ? '解除联动' : '链接音画'}</span></button><span className="toolbar-spacer" /><button className="toolbar-tool" onClick={() => addMarkerAtPlayhead()}><Flag size={13} /><span>标记</span></button><button className="toolbar-tool" onClick={addGraphicClip}><ImagePlus size={13} /><span>添加图文</span></button><button className="toolbar-tool" onClick={() => openPicker({ preferredKind: 'audio', addToTimeline: true })}><Music2 size={13} /><span>添加音乐</span></button></div>
+  }
+
+  function reanalyzeMusic() {
+    if (musicAnalysisState === 'analyzing') return
+    setMusicAnalysisState('analyzing')
+    setStatus('正在根据当前视频、氛围和节奏重新分析曲库…', 'info')
+    setVideoAnalysisVersion((value) => value + 1)
+    window.setTimeout(() => {
+      setMusicAnalysisVersion((value) => value + 1)
+      setMusicAnalysisState('ready')
+      setStatus(`配乐推荐已更新，已重新比较 ${musicFiles.length} 首本地音乐。`, 'info')
+    }, 520)
+  }
+
+  function renderMusicWorkbench() {
+    const activeVisual = findActiveVisualClip(project, project.playhead)
+    const hasVideo = Boolean(activeVisual)
+    const hasDialogue = project.clips.some((clip) => clip.kind === 'audio' && !isBackgroundMusicClip(clip, project) && clip.linkedClipId)
+    const visibleSuggestions = suggestions.slice(0, 3)
+    return <div className="music-workbench-dock" aria-label="智能配乐推荐">
+      <div className="music-workbench-summary"><div><span className="section-kicker">SMART SOUND MATCH</span><h3>{hasVideo ? '为当前视频找到合适的声音' : '导入视频后开始匹配'}</h3><p>{hasVideo ? `${formatCompactTime(duration)} · ${videoAnalysis?.status === 'analyzing' ? '正在分析镜头节奏与对白密度' : videoAnalysis?.dialogueRatio > .45 ? '对白密度较高，优先推荐动态平稳的音乐' : '根据镜头节奏和影片时长进行匹配'}` : '当前时间线还没有可分析的画面。'}</p></div><div className="music-analysis-tags"><span><span className="music-status-dot" />本机分析</span><span>{videoAnalysis?.status === 'analyzing' ? '视频分析中' : videoAnalysis?.status === 'failed' ? '基础模式' : videoAnalysis?.status === 'ready' ? `目标 ${videoAnalysis.targetBpm || 96} BPM` : hasVideo ? '等待分析' : '等待素材'}</span></div></div>
+      {!musicFiles.length ? <div className="music-workbench-empty"><div className="music-empty-orbit"><Music2 size={19} /></div><div><b>导入一首音乐开始匹配</b><span>曲库中的本地音乐会按氛围、节奏和时长进行推荐。</span></div><button onClick={addMusicFiles}><Plus size={13} />导入音乐</button></div> : <>
+        <div className="music-recommendation-heading" aria-live="polite"><div><b>推荐曲目</b><span>{visibleSuggestions.length ? `为你挑选 ${visibleSuggestions.length} 首` : '暂无匹配曲目'}</span></div><button className={musicAnalysisState === 'analyzing' ? 'is-analyzing' : ''} disabled={musicAnalysisState === 'analyzing'} onClick={reanalyzeMusic}>{musicAnalysisState === 'analyzing' ? <LoaderCircle size={12} className="loading-spin" /> : <RotateCw size={12} />}{musicAnalysisState === 'analyzing' ? '分析中…' : '重新分析'}</button></div>
+        <div className="music-recommendation-list">{visibleSuggestions.map((music, index) => {
+          const selected = selectedMusicId === music.id
+          const isPlaying = recordingMusic === music.id
+          const inTimeline = project.clips.some((clip) => isBackgroundMusicClip(clip, project) && clip.assetId === music.id)
+          return <article className={`music-recommendation-card ${selected ? 'is-selected' : ''}`} key={music.id} onClick={() => setSelectedMusicId(music.id)}><div className="music-recommendation-art" style={{ '--music-hue': [48, 168, 218][index] }}><span>{String(index + 1).padStart(2, '0')}</span><Music2 size={18} /></div><div className="music-recommendation-copy"><div className="music-recommendation-title"><b>{music.name}</b><strong>{music.score}<small>% 匹配</small></strong></div><span>{formatCompactTime(music.duration)} · {music.bpm ? `${music.bpm} BPM` : '节奏待分析'} · {music.genre}</span><div className="music-recommendation-tags"><i>{moodLabel(music.mood)}</i><i>{music.tempo === 'mid' ? '中节奏' : music.tempo === 'slow' ? '慢节奏' : '节奏灵活'}</i><small>{music.license ? music.reason : '请确认许可后再用于成片'}</small></div></div><div className="music-recommendation-actions"><button className={`music-preview-button ${isPlaying ? 'is-playing' : ''}`} aria-label={`${isPlaying ? '停止' : '试听'} ${music.name}`} onClick={(event) => { event.stopPropagation(); toggleMusicPreview(music) }}>{isPlaying ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}{isPlaying ? '试听中' : '试听'}</button><button className="music-use-button" onClick={(event) => { event.stopPropagation(); addMusicToTimeline(music) }}>{inTimeline ? <Check size={13} /> : <Plus size={13} />}{inTimeline ? '已入轨' : '使用这首'}</button></div>{isPlaying ? <div className="music-preview-progress"><i style={{ width: `${Math.max(2, musicPreviewProgress * 100)}%` }} /></div> : null}</article>
+        })}</div>
+      </>}
+    </div>
   }
 
   function renderVideoPanel() {
@@ -2818,6 +3149,7 @@ function App() {
             <div className="preview-safe-margin" aria-hidden="true" />
           </div>
         </div>
+        {activeTab === 'music' ? renderMusicWorkbench() : null}
         <div className="transport-row"><button className="transport-side" title="回到开头" aria-label="回到开头" onClick={returnToStart}><SkipBack size={13} /></button><button className="transport-side" title="上一剪辑点" onClick={() => { const previous = [...project.clips].filter((clip) => clip.start < project.playhead).sort((a, b) => b.start - a.start)[0]; setPlayhead(previous?.start || 0) }}><ChevronLeft size={14} /></button><button className="transport-step" aria-label="前一帧" onClick={() => setPlayhead(Math.max(0, project.playhead - 1 / 30))}><ChevronLeft size={13} /></button><button className="play-button" onClick={togglePlayback} aria-label={playing ? '暂停' : '播放'}>{playing ? <Pause size={15} fill="currentColor" /> : <Play size={15} fill="currentColor" />}</button><button className="transport-step next" aria-label="后一帧" onClick={() => setPlayhead(Math.min(duration, project.playhead + 1 / 30))}><ChevronRight size={13} /></button><button className="transport-side" title="下一剪辑点" onClick={() => { const next = [...project.clips].filter((clip) => clip.start > project.playhead).sort((a, b) => a.start - b.start)[0]; setPlayhead(next?.start || duration) }}><ChevronRight size={14} /></button><button className="transport-side" title="到末尾" aria-label="到末尾" onClick={returnToEnd}><SkipForward size={13} /></button><div className="timecode">{timestamp}<span className="timecode-separator">:</span><span className="frame-code">{String(Math.round((project.playhead % 1) * 30).toString().padStart(2, '0'))}</span></div><span className="transport-ratio">01.00 ×</span><button className="icon-button" title="原画预览" onClick={() => setStatus('播放性能：代理模式已就绪，代理将在后续阶段生成。', 'info')}><Gauge size={13} /></button></div>
         <div className="preview-footer"><span><span className="footer-rec" /><b>PREVIEW</b><i>·</i>{finalLive && finalPreviewAsset?.width ? `${finalPreviewAsset.width} × ${finalPreviewAsset.height}` : project.profile}</span><span><span className="preview-fps">30</span> FPS <i>·</i>{finalLive ? '时间线预览' : exampleMode ? '界面示例 · 无源文件' : project.clips.length ? '无可用画面' : '等待导入素材'}<i>·</i>SDR</span></div>
       </div>
@@ -2856,7 +3188,7 @@ function App() {
   }
 
   function renderRightInspector() {
-    return <aside className={`inspector-panel ${activeTab === 'subtitles' ? 'subtitle-inspector' : ''} ${inspectorCollapsed ? 'inspector-panel-collapsed' : ''}`}>
+    return <aside className={`inspector-panel ${activeTab === 'subtitles' ? 'subtitle-inspector' : ''} ${activeTab === 'music' ? 'music-inspector-panel' : ''} ${inspectorCollapsed ? 'inspector-panel-collapsed' : ''}`}>
       {activeTab === 'subtitles' && !inspectorCollapsed && !subtitleWorkbenchOpen && <div className="subtitle-panel-resizer" role="separator" aria-label="调整字幕侧栏宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={560} aria-valuenow={subtitlePanelWidth} tabIndex={0}
         onPointerDown={resizeSubtitlePanel} onPointerMove={moveSubtitlePanel}
         onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) }}
@@ -2987,7 +3319,45 @@ function App() {
   }
 
   function renderMusicInspector() {
-    return <div className="inspector-scroll music-inspector-scroll"><div className="music-match-card"><div className="match-card-ribbon"><Sparkles size={13} />LOCAL SOUND MATCHER</div><h3>给故事找到<br /><i>合适的声音。</i></h3><p>曲库筛选、情绪标签与匹配分数均在本机计算。未连接在线服务，不上传视频或素材。</p><div className="match-local-mark"><LockKeyhole size={12} />PRIVATE BY DEFAULT <span>·</span> AUDIO RIGHTS MATTER</div></div><div className="inspector-section music-preferences"><div className="section-heading-row"><div><span className="section-kicker">01 / STORY FEEL</span><span className="subsection-title">项目氛围</span></div><span className="offline-badge"><span />本地</span></div><span className="mood-choice-label">节奏与情绪</span><div className="mood-chips">{[['sunny', '晴朗', '☼'], ['calm', '舒缓', '↗'], ['dreamy', '朦胧', '◌'], ['energetic', '轻快', '↗']].map(([id, label, icon]) => <button className={mood === id ? 'mood-chip mood-selected' : 'mood-chip'} key={id} onClick={() => setMood(id)}><i>{icon}</i>{label}</button>)}</div><div className="mini-field-row"><span>剪辑节奏</span><select className="inline-select" value={tempo} onChange={(event) => setTempo(event.target.value)}><option value="slow">慢 · 余韵镜头</option><option value="mid">中 · 自然节奏</option><option value="fast">快 · 密集转场</option></select></div><div className="mini-field-row"><span>音乐响度</span><div className="mix-volume"><input aria-label="背景音乐响度" type="range" min="0.05" max="0.6" step="0.01" value={volumeTarget} onChange={(event) => { const next = Number(event.target.value); setVolumeTarget(next); if (selectedClip?.isMusic) setClipVolume(selectedClip.id, next) }} /><span>{Math.round(volumeTarget * 100)}%</span></div></div><div className="ducking-summary"><Headphones size={13} /><span>人声出现时自动压低音乐</span><span className="check-tick"><Check size={11} /></span></div></div><div className="inspector-section matches-section"><div className="section-heading-row"><div><span className="section-kicker">02 / MATCHES</span><span className="subsection-title">为这支影片推荐</span></div><button className="rerun-button" onClick={() => setStatus('推荐已按影片氛围、本机曲库和时长重新排序。', 'info')}><RotateCw size={12} />重新分析</button></div>{!musicFiles.length && <div className="rights-warning"><Info size={12} /><span>尚未导入本地音乐。导入后可试听并加入时间线。</span></div>}{suggestions.map((music, index) => <div className={`recommended-track ${index === 0 ? 'recommended-primary' : ''}`} key={music.id}><div className="track-artwork" style={{ '--music-hue': [46, 186, 276][index] }}>{index === 0 ? <Waves size={17} /> : index === 1 ? <Sun size={16} /> : <AudioLines size={16} />}<span>{String(index + 1).padStart(2, '0')}</span></div><div className="recommended-copy"><div className="recommended-title-row"><strong>{music.name}</strong><span className="match-score">{music.score}<i>%</i></span></div><span>{music.artist} <i>·</i> {formatCompactTime(music.duration)}</span><div className="recommend-tags"><span>{moodLabel(music.mood)}</span><span>{music.tempo === 'mid' ? '中节奏' : music.tempo === 'slow' ? '慢节奏' : '节奏灵活'}</span></div><small>{music.license ? music.reason : '请确认许可后再用于成片'}</small></div><button className={`track-play ${recordingMusic === music.id ? 'is-playing' : ''}`} aria-label={`${recordingMusic === music.id ? '暂停' : '试听'} ${music.name}`} onClick={() => toggleMusicPreview(music)}>{recordingMusic === music.id ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}</button><button className="track-use" aria-label={`添加 ${music.name}`} title="添加到时间轴" onClick={() => addMusicToTimeline(music)}><Plus size={14} /></button></div>)}<div className="licence-checkbox" role="button" aria-disabled={!suggestions.length} tabIndex={suggestions.length ? 0 : -1} onClick={() => { const topTrack = suggestions[0]; saveMusicLicense(topTrack) }} onKeyDown={(event) => event.key === 'Enter' && saveMusicLicense(suggestions[0])}><span className={suggestions[0]?.license ? 'license-checkbox checked' : 'license-checkbox'}>{suggestions[0]?.license && <Check size={9} />}</span><span>我确认所选音乐具有用于个人作品的许可</span><button title="记录你的许可状态，不会验证实际授权内容。" onClick={(event) => { event.stopPropagation(); setStatus('Videome 不自动授予音乐版权；仅记录你自行确认的授权声明。', 'info') }}><Info size={11} /></button></div><button className="add-library-music" onClick={addMusicFiles}><Plus size={13} />添加一首授权的本地音乐</button></div><div className="music-ethics-note"><LockKeyhole size={11} /><span>推荐基于你导入的音乐元数据。本地模型分析不代替人工确认授权或配乐质量。</span></div></div>
+    const selectedMusicClip = currentMusicClip && (!selectedMusicId || selectedMusicId === currentMusicClip.assetId) ? currentMusicClip : null
+    const musicClip = selectedMusicClip || (selectedClip?.isMusic && (!selectedMusicId || selectedClip.assetId === selectedMusicId) ? selectedClip : null)
+    const music = musicClip ? musicFiles.find((item) => item.id === musicClip.assetId) : selectedMusic
+    const effectiveMusic = music ? { ...music, ...(music.analysis || {}), ...(music.musicOverrides || {}) } : null
+    const mixSettings = music ? getMusicMixSettings(music, musicClip) : null
+    const updateMusicOverride = (patch, label) => {
+      if (!music?.id) return
+      applyEdit(label, (current) => ({ ...current, assets: current.assets.map((asset) => asset.id === music.id ? { ...asset, musicOverrides: { ...(asset.musicOverrides || {}), ...patch } } : asset) }), assets)
+      setAssets((current) => current.map((asset) => asset.id === music.id ? { ...asset, musicOverrides: { ...(asset.musicOverrides || {}), ...patch } } : asset))
+    }
+    const updateMusicMix = (patch, label) => {
+      if (!music?.id) return
+      const nextSettings = getMusicMixSettings(music, { ...mixSettings, ...patch })
+      const { volume, fadeIn, fadeOut, autoDuck, repeat, trimStart, duration: clipDuration } = nextSettings
+      const normalizedPatch = { volume, fadeIn, fadeOut, autoDuck, repeat, trimStart, duration: clipDuration, trimEnd: trimStart + clipDuration }
+      if (musicClip) {
+        applyEdit(label, (current) => ({ ...current, clips: current.clips.map((clip) => clip.id === musicClip.id ? { ...clip, ...normalizedPatch } : clip) }))
+      }
+      setMusicMixDrafts((current) => ({ ...current, [music.id]: { ...(current[music.id] || {}), ...normalizedPatch } }))
+    }
+    const removeCurrentMusic = () => {
+      if (!musicClip) return
+      applyEdit('移除背景音乐', (current) => ({ ...current, clips: current.clips.filter((clip) => clip.id !== musicClip.id) }))
+      setSelectedId(null)
+      updateSelectedClipIds([])
+      setStatus('已移除当前背景音乐，可撤销恢复。', 'info')
+    }
+    return <div className="inspector-scroll music-inspector-scroll">
+      <div className="music-inspector-hero"><div className="music-inspector-hero-icon"><Music2 size={20} /></div><div><span className="section-kicker">CURRENT SOUNDTRACK</span><b>{music?.name || '尚未选择配乐'}</b><span>{music ? `${formatCompactTime(music.duration)} · ${music.bpm ? `${music.bpm} BPM` : '本地音频'}` : '从左侧曲库选择一首音乐'}</span></div></div>
+      {music ? <>
+        <div className="inspector-section music-analysis-section"><div className="music-analysis-detail-heading"><div><span className="section-kicker">ANALYSIS PROFILE</span><span className="subsection-title">识别特征</span></div><span className={`music-analysis-status ${effectiveMusic.analysis?.status === 'ready' ? 'ready' : effectiveMusic.analysis?.status === 'failed' ? 'failed' : 'pending'}`}>{effectiveMusic.analysis?.status === 'ready' ? '本机已完成' : effectiveMusic.analysis?.status === 'failed' ? '识别失败' : '正在分析'}</span></div><div className="music-feature-grid"><label><span>BPM</span><input type="number" min="40" max="220" step="1" value={effectiveMusic.bpm || ''} placeholder="待分析" onChange={(event) => updateMusicOverride({ bpm: event.target.value ? Number(event.target.value) : null }, '修正音乐 BPM')} /></label><label><span>能量</span><div className="music-feature-range"><input type="range" min="0" max="1" step="0.01" value={Number(effectiveMusic.energy ?? 0.45)} onChange={(event) => updateMusicOverride({ energy: Number(event.target.value) }, '修正音乐能量')} /><b>{Math.round(Number(effectiveMusic.energy ?? 0.45) * 100)}%</b></div></label><label><span>氛围</span><select value={effectiveMusic.mood || 'versatile'} onChange={(event) => updateMusicOverride({ mood: event.target.value }, '修正音乐氛围')}><option value="sunny">晴朗 · 明亮</option><option value="calm">舒缓 · 留白</option><option value="dreamy">朦胧 · 电影感</option><option value="energetic">活力 · 轻快</option><option value="versatile">通用 · 待标注</option></select></label><label><span>节奏</span><select value={effectiveMusic.tempo || 'flexible'} onChange={(event) => updateMusicOverride({ tempo: event.target.value }, '修正音乐节奏')}><option value="slow">慢</option><option value="mid">中</option><option value="fast">快</option><option value="flexible">灵活</option></select></label></div>{music.musicOverrides && <span className="music-manual-note"><Check size={11} />已使用手动修正，自动识别不会覆盖</span>}</div>
+      <>
+        <div className="inspector-section music-control-section"><div className="music-control-heading"><div><span className="section-kicker">01 / MIX</span><span className="subsection-title">当前配乐</span></div><span className={`music-live-status ${musicClip ? '' : 'music-preview-status'}`}><span />{musicClip ? '已入轨' : '试听配置'}</span></div><div className="music-control-value"><span>音乐音量</span><b>{Math.round((mixSettings.volume ?? 0.22) * 100)}%</b></div><div className="mix-volume music-volume-control"><Volume2 size={14} /><input aria-label="音乐音量" type="range" min="0" max="0.8" step="0.01" value={mixSettings.volume ?? 0.22} onChange={(event) => { const value = Number(event.target.value); setVolumeTarget(value); updateMusicMix({ volume: value }, '调整背景音乐音量') }} /><button aria-label="静音背景音乐" onClick={() => updateMusicMix({ volume: 0 }, '静音背景音乐')}><VolumeX size={13} /></button></div><label className="music-switch-row"><span><Headphones size={14} /><span><b>人声自动避让</b><small>对白出现时降低音乐响度</small></span></span><button className={`switch ${mixSettings.autoDuck !== false ? 'switch-on' : ''}`} role="switch" aria-checked={mixSettings.autoDuck !== false} aria-label="人声自动避让" onClick={() => updateMusicMix({ autoDuck: mixSettings.autoDuck === false }, '切换人声自动避让')}><i /></button></label><div className="music-fade-grid"><label><span>淡入</span><select value={String(mixSettings.fadeIn ?? 1.2)} onChange={(event) => updateMusicMix({ fadeIn: Number(event.target.value) }, '调整音乐淡入')}><option value="0">关闭</option><option value="0.5">0.5 秒</option><option value="1.2">1.2 秒</option><option value="2">2 秒</option></select></label><label><span>淡出</span><select value={String(mixSettings.fadeOut ?? 4.5)} onChange={(event) => updateMusicMix({ fadeOut: Number(event.target.value) }, '调整音乐淡出')}><option value="0">关闭</option><option value="1.5">1.5 秒</option><option value="3">3 秒</option><option value="4.5">4.5 秒</option><option value="6">6 秒</option></select></label></div></div>
+        <div className="inspector-section music-advanced-section"><button className="music-advanced-toggle" onClick={() => setMusicAdvancedOpen((value) => !value)}><span><Settings2 size={13} />高级设置</span>{musicAdvancedOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>{musicAdvancedOpen && <div className="music-advanced-body"><div className="mini-field-row"><span>循环铺满视频</span><button className={`switch ${mixSettings.repeat ? 'switch-on' : ''}`} role="switch" aria-checked={Boolean(mixSettings.repeat)} aria-label="循环铺满视频" onClick={() => updateMusicMix({ repeat: !mixSettings.repeat }, '切换音乐循环')}><i /></button></div><label className="music-position-field"><span>曲目起始位置 <b>{formatCompactTime(mixSettings.trimStart)}</b></span><input aria-label="背景音乐曲目起始位置" type="range" min="0" max={Math.max(0, Number(music.duration || mixSettings.trimStart) - 0.2)} step="0.1" value={mixSettings.trimStart} onChange={(event) => updateMusicMix({ trimStart: Number(event.target.value) }, '调整音乐起始位置')} /></label><label className="music-position-field"><span>片段时长 <b>{formatCompactTime(mixSettings.duration)}</b></span><input aria-label="背景音乐片段时长" type="range" min="0.2" max={Math.max(0.2, duration)} step="0.1" value={Math.min(mixSettings.duration, duration)} disabled={mixSettings.repeat} title={mixSettings.repeat ? '循环铺满已开启，时长自动跟随视频；关闭后可手动调整' : '调整背景音乐片段时长'} onChange={(event) => { const nextDuration = Math.max(0.2, Math.min(duration, Number(event.target.value))); updateMusicMix({ duration: nextDuration }, '调整音乐片段时长') }} /></label><div className="music-license-row"><span>{music?.license ? <BadgeCheck size={13} /> : <Info size={13} />} {music?.license ? '已记录许可声明' : '尚未确认使用许可'}</span><button onClick={() => saveMusicLicense(music)}>{music?.license ? '取消确认' : '记录许可'}</button></div></div>}</div>
+        {musicClip ? <button className="music-remove-button" onClick={removeCurrentMusic}><Trash2 size={13} />移除当前配乐</button> : <div className="music-draft-note"><Info size={12} /><span>试听配置会在点击“使用这首”时写入背景音乐。</span></div>}
+      </>
+      </> : <div className="music-inspector-empty"><Music2 size={18} /><b>还没有选择音乐</b><span>从中间推荐结果或左侧曲库选择一首音乐。</span></div>}
+      <div className="music-local-note"><LockKeyhole size={12} /><span>配乐只影响当前工程和导出，不会修改源音频。</span></div>
+    </div>
   }
 
   function renderProjectSettings() {
@@ -3133,9 +3503,9 @@ function App() {
       {renderHeader()}
       {renderLeftRail()}
       {renderMediaLibrary()}
-      <main className="editor-main">
+      <main className={`editor-main ${activeTab === 'music' ? 'music-editor-main' : ''}`}>
         {renderEditorToolbar()}
-        <div ref={workspaceRef} style={{ '--subtitle-panel-width': `${subtitlePanelWidth}px` }} className={`workspace-grid ${activeTab === 'subtitles' ? 'workspace-subtitles' : ''} ${subtitleWorkbenchOpen ? 'workspace-subtitle-workbench' : ''} ${inspectorCollapsed ? 'workspace-inspector-collapsed' : ''}`}>
+        <div ref={workspaceRef} style={{ '--subtitle-panel-width': `${subtitlePanelWidth}px` }} className={`workspace-grid ${activeTab === 'subtitles' ? 'workspace-subtitles' : ''} ${activeTab === 'music' ? 'workspace-music' : ''} ${subtitleWorkbenchOpen ? 'workspace-subtitle-workbench' : ''} ${inspectorCollapsed ? 'workspace-inspector-collapsed' : ''}`}>
           {renderVideoPanel()}
           {renderRightInspector()}
         </div>

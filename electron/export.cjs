@@ -73,6 +73,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
     .sort((first, second) => Number(first.start) - Number(second.start))
   const trackMap = new Map((project.tracks || []).map((track) => [track.id, track]))
   const getTrack = (clip) => trackMap.get(clip.trackId) || { id: clip.trackId, type: clip.kind === 'audio' ? 'audio' : 'video', order: 0, muted: false }
+  const isMusicClip = (clip) => clip.isMusic === true || /背景音乐|background\s*music|\bmusic\b/i.test(getTrack(clip).label || '')
   const videoClips = clips
     .filter((clip) => ['video', 'image', 'graphics'].includes(clip.kind) || getTrack(clip).type === 'graphics')
     .map((clip) => ({ clip, asset: assets.find((asset) => asset.id === clip.assetId), track: getTrack(clip) }))
@@ -151,11 +152,10 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
   const inputForClip = new Map()
   const inputForAudio = new Map()
 
-  const appendInput = (asset, { loop = false, image = false } = {}) => {
+  const appendInput = (asset, { image = false } = {}) => {
     const index = inputs.length
     inputs.push({ asset, image })
     if (image) args.push('-loop', '1', '-framerate', String(fps))
-    else if (loop) args.push('-stream_loop', '-1')
     args.push('-i', asset.path)
     return index
   }
@@ -167,7 +167,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
     inputForClip.set(clip.id, appendInput(asset, { image: kind === 'image' }))
   }
   for (const { clip, asset } of audioClips) {
-    inputForAudio.set(clip.id, appendInput(asset, { loop: Boolean(clip.isMusic) }))
+    inputForAudio.set(clip.id, appendInput(asset))
   }
 
   if (![...inputForClip.values()].length) throw new Error('渲染工程需要至少一个可读取的视频或图片轨道片段。')
@@ -258,7 +258,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
   const normalizedAudio = audioClips
     .filter(({ clip }) => inputForAudio.has(clip.id))
     .map(({ clip, asset }) => ({ clip, asset, input: inputForAudio.get(clip.id) }))
-  normalizedAudio.filter(({ clip }) => !clip.isMusic).forEach(({ clip, input }) => {
+  normalizedAudio.filter(({ clip }) => !isMusicClip(clip)).forEach(({ clip, input }) => {
     const start = Math.max(0, Number(clip.start))
     const trimStart = Math.max(0, Number(clip.trimStart || 0))
     const effectiveDuration = Math.max(0.001, Math.min(Number(clip.duration), Math.max(0.001, duration - start)))
@@ -275,7 +275,7 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
     dialogueLabels.push(`[${label}]`)
   })
 
-  const duckingMusic = normalizedAudio.filter(({ clip }) => clip.isMusic && clip.autoDuck !== false && dialogueLabels.length)
+  const duckingMusic = normalizedAudio.filter(({ clip }) => isMusicClip(clip) && clip.autoDuck !== false && dialogueLabels.length)
   const sidechainLabels = new Map()
   if (dialogueLabels.length) {
     let voices = dialogueLabels[0]
@@ -294,13 +294,17 @@ function buildExportArguments(settings, temporaryOutput, subtitlePath = null, ru
     }
     audioLabels.splice(0, audioLabels.length, voices)
   }
-  normalizedAudio.filter(({ clip }) => clip.isMusic).forEach(({ clip, input }) => {
+  normalizedAudio.filter(({ clip }) => isMusicClip(clip)).forEach(({ clip, input }) => {
     const start = Math.max(0, Number(clip.start))
     const trimStart = Math.max(0, Number(clip.trimStart || 0))
     const effectiveDuration = Math.max(0.001, Math.min(Number(clip.duration), Math.max(0.001, duration - start)))
-    const volume = Math.max(0, Math.min(3, Number(clip.volume ?? (clip.isMusic ? 0.22 : 0.82))))
+    const volume = Math.max(0, Math.min(3, Number(clip.volume ?? (isMusicClip(clip) ? 0.22 : 0.82))))
     const audio = `customAudio${audioLabels.length}`
-    let filter = `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS,volume=${volume}`
+    // Loop the selected source range, matching preview's trimStart → EOF loop.
+    // Looping the input file would replay the skipped introduction on each pass.
+    let filter = clip.repeat === true
+      ? `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS,aloop=loop=-1:size=2147483647,atrim=duration=${number(effectiveDuration)},volume=${volume}`
+      : `atrim=start=${number(trimStart)}:duration=${number(effectiveDuration)},asetpts=PTS-STARTPTS,volume=${volume}`
     const fadeIn = Math.max(0, Number(clip.fadeIn || 0))
     const fadeOut = Math.max(0, Number(clip.fadeOut || 0))
     if (fadeIn && effectiveDuration > fadeIn) filter += `,afade=t=in:st=0:d=${number(fadeIn)}`
