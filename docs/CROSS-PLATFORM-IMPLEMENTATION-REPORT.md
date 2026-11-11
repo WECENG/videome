@@ -1,8 +1,10 @@
 # 双平台实现与本机验收记录
 
-记录日期：2026-11-05（Asia/Shanghai）。适用版本：`0.1.0 Preview`。本机为 Apple Silicon / macOS 26，开发 Node.js 24.19.0、Electron 45.1.0，随包 FFmpeg/ffprobe 9.0.2。
+记录日期：2026-11-05（Asia/Shanghai）。历史记录适用版本：`0.1.0 Preview`。当前仓库版本：`1.0.0`（2026-11-11 文档整理）。本机为 Apple Silicon / macOS 26，开发 Node.js 24.19.0、Electron 45.1.0，随包 FFmpeg/ffprobe 9.0.2。
 
 本文记录已观察的实现和验收证据，不把工作流配置等同于远程执行。2026-11-05 已完成[云端构建 #6](https://github.com/WECENG/videome/actions/runs/41957372222)，两平台全部成功；未重新运行 200 条媒体性能测试。
+
+本文是 2026-11-05 的历史验收证据，保留当时的构建提交、测试数量和待验收项目。1.0.0 的智能配乐、本地分析和试听配置行为以当前代码及[功能与操作说明](FEATURES.md)、[架构与数据流](ARCHITECTURE.md)为准；本文中的历史构建名称不代表当前发行包名称。
 
 ## 1. 交付状态
 

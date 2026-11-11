@@ -1,6 +1,6 @@
 # 架构与数据流
 
-适用版本：`0.1.0 Preview`。核对日期：2026-11-05。
+适用版本：`1.0.0`。核对日期：2026-11-11。
 
 ## 1. 运行结构
 
@@ -11,6 +11,8 @@ React 编辑器 main.jsx / 批量面板 BatchMixPanel.jsx
 preload.cjs → main.cjs
         ├── project.cjs：工程保存、写队列和空时间线覆盖前备份
         ├── export.cjs / preview.cjs：普通导出与预览参数
+        ├── music-analysis.cjs：音乐/视频特征分析、本机缓存与分析队列
+        ├── music-analysis-ipc.cjs：音乐分析 IPC、路径授权与结果包装
         ├── dubbing/：本地模型安装、配音任务、阶段进程与任务恢复
         ├── runtime.cjs：工具、字体、编码器与路径处理
         ├── filesystem.cjs / processes.cjs：平台文件操作和进程终止
@@ -42,7 +44,60 @@ preload.cjs → main.cjs
 
 桌面 `.videome` 是 JSON，不嵌入媒体。`project.cjs` 按目标路径串行写临时文件再替换；空时间线写入一个原本含片段的工程前，会保留 `.backup-时间戳`。前端“工程位置”通过 `getStorageLocations` 获取实际用户数据目录，通过 `showProjectInFolder` 定位已存在的工程。
 
-## 3. 媒体与普通导出
+## 3. 智能配乐与本地分析
+
+智能配乐的数据流分为素材分析、视频上下文分析和前端编排三段：
+
+```text
+导入普通音频
+  → assets 登记
+  → music-analysis 队列
+  → FFmpeg/ffprobe + JavaScript DSP
+  → userData/music-analysis/*.json
+  → musicFiles.analysis
+
+打开智能配乐
+  → 读取当前可见视频片段
+  → 计算视频上下文缓存键
+  → 本机 FFmpeg 分析镜头、画面和原声
+  → generateSuggestions
+  → 推荐卡片 / 临时试听 / 使用这首
+```
+
+### 分析服务
+
+`electron/music-analysis.cjs` 使用随应用提供的 FFmpeg 和 ffprobe。音乐分析先读取音频流和时长，再将音频转换为单声道、`11025 Hz`、`s16le` PCM。轻量 DSP 按帧计算 RMS、零交叉率、频谱亮度和 onset envelope，并据此估算 BPM、能量、动态范围、静音比例、节奏和氛围。超过 10 分钟的音乐取开头、中段和结尾窗口，避免整段音频占用内存。
+
+视频分析读取时间线中的可见视频片段，使用片段边界计算剪辑密度，并通过 FFmpeg 的 `signalstats` 和场景选择滤镜估算画面亮度、饱和度和场景切换数量。原声使用音频能量和静音比例进行有效声音/对白密度启发式估算，不生成文字。分析结果带有 `engineVersion`，缓存键还包含媒体绝对路径、文件大小、修改时间和当前时间线片段区间。
+
+本机缓存位于 Electron 的 `userData/music-analysis/`。缓存仅保存分析数字和指纹，不复制源媒体。导入音乐会进入后台队列，导入流程不等待整库分析；导出或智能配音占用 `ResourceGate` 时，音乐分析等待资源释放。任务取消、应用退出或 FFmpeg 失败时不会把半成品当作可用结果。
+
+### IPC 边界
+
+主进程在 `main.cjs` 创建 `MusicAnalysisService`，将进度广播给所有窗口；`music-analysis-ipc.cjs` 负责 `authorizeExistingMedia` 路径授权。preload 只暴露以下明确接口：
+
+- `musicAnalysisStatus()`：读取队列和当前任务状态；
+- `analyzeMusicAssets({ paths })`：登记普通音频的后台分析任务；
+- `analyzeMusicVideo({ duration, videos })`：分析当前时间线的视频上下文；
+- `cancelMusicAnalysis()`：取消队列及活动任务；
+- `onMusicAnalysisProgress(callback)`：订阅音乐分析进度。
+
+渲染层不能直接启动 FFmpeg，也不能直接读取任意本地路径。浏览器预览没有 Electron IPC，因此只使用基础元数据和手动标签推荐。
+
+### 推荐和编排状态
+
+`src/domain.js` 的 `musicFeatures()` 将自动分析结果、素材默认值和 `musicOverrides` 合并为有效特征。`generateSuggestions()` 使用时长、BPM/节奏、能量、氛围和对白兼容性计算 100 分制推荐；某项缺失时按可用权重重新归一化。许可声明只单独展示，不进入音频匹配分数。
+
+`src/main.jsx` 维护两类当前页面状态：
+
+- 未入轨曲目的 `musicMixDrafts`，用于试听配置；
+- 已入轨背景音乐片段的 `volume`、`fadeIn`、`fadeOut`、`autoDuck`、`repeat`、`trimStart` 和 `duration`，用于真实时间线。
+
+试听播放器通过 `syncMusicPreviewAudio()` 与时间线播放头同步，复用音量、淡入淡出、人声避让、起始位置和循环范围。选择“使用这首”时，`appendMusicClip()` 读取同一份配置，替换已有背景音乐片段或新增背景音乐片段，并通过 `applyEdit()` 进入撤销栈。`repeat` 默认开启；开启时片段时长跟随可见视频的有效结束位置，循环从 `trimStart` 继续，不重新播放被跳过的前奏。
+
+用户手动修改 BPM、能量、氛围或节奏时，只把修改字段写入对应素材的 `musicOverrides`；自动分析结果仍保留在 `analysis` 中。这样既能保留本机识别结果，也能在推荐、保存和重新打开工程时优先使用用户修正。
+
+## 4. 媒体与普通导出
 
 1. 文件选择或导入请求交给主进程，ffprobe 读取媒体信息，按需生成缩略图。
 2. 界面保存素材记录，加入轨道后产生源区间和联动原声片段。
@@ -52,7 +107,7 @@ preload.cjs → main.cjs
 
 原码流保留有单片段及容器兼容限制。H.264/HEVC 在 Mac 使用 VideoToolbox，匹配硬件初始化错误时软件重试一次；Windows 采用 `libx264/libx265`。WebM 为 VP9/Opus，无损中间文件为 FFV1/PCM MKV。标题、字幕和封面文字使用随包 Noto Sans CJK SC。
 
-## 4. 批量规划与资源调度
+## 5. 批量规划与资源调度
 
 `planning.cjs` 将请求秒数转换为整数帧预算，固定切片可吸附附近场景边界。序列使用算法版本、种子、输出序号和尝试序号派生随机状态，按片段与区间、使用帧数和顺序生成签名。所有序列先生成、去重和保存，再允许开始编码；完成顺序不参与规划。
 
@@ -62,7 +117,7 @@ preload.cjs → main.cjs
 
 媒体由 `process.cjs` 守护进程启动。取消通过 IPC 通知停止；Mac 使用信号，Windows 按本应用创建的 PID 调用 `taskkill.exe /T`，超时强制结束。主进程断开 IPC 时守护进程尝试清理 FFmpeg；意外退出的恢复以清单和磁盘状态为准。
 
-## 5. 批量持久化与恢复
+## 6. 批量持久化与恢复
 
 权威记录是 `userData/batch-mix/<jobId>/job.json`，保存源 SHA-256、媒体信息、参数快照、算法/FFmpeg 版本、完整序列、序号和状态。`store.cjs` 将写入排入单队列，写临时文件、刷新、替换并保留 `.bak`；输出目录的 JSON 是副本，CSV 是派生视图。
 
@@ -74,7 +129,7 @@ Windows 不执行 POSIX 目录 fsync；文件仍刷新并保留备份，不宣�
 
 代表工程由保存的序列引用原视频源区间重建，画面连续、原声联动，使用独立 `.videome` 路径。载入前将当前工程另存至 `userData/batch-project-recovery/`。
 
-## 6. 接口与安全边界
+## 7. 接口与安全边界
 
 渲染层保持 `contextIsolation: true`、`nodeIntegration: false` 和沙箱。preload 仅暴露明确的文件、工程、媒体、进度订阅及批量方法；主进程执行路径和参数校验。
 
@@ -82,12 +137,13 @@ Windows 不执行 POSIX 目录 fsync；文件仍刷新并保留备份，不宣�
 
 - 工程：`openProject`、`saveProject`、`saveProjectFile`、`chooseProjectLocation`、`getStorageLocations`、`showProjectInFolder`。
 - 媒体：`pickMedia`、`probeMedia`、`requestMedia`、`createPreviewProxy`、`exportFrame`、`exportMedia`、`cancelExport`。
+- 音乐分析：`musicAnalysisStatus`、`analyzeMusicAssets`、`analyzeMusicVideo`、`cancelMusicAnalysis` 和 `onMusicAnalysisProgress`；分析缓存位于 `userData/music-analysis/`，不写入源音频。
 - 批量：`createBatchMixAnalysis` 返回 `jobId`；配合 get/list、start/pause/resume/cancel/retry、create-project、remove/cache 和 `onBatchMixProgress`。方法名以 `preload.cjs` 为准。
 - 配音：`dubbingModels`、`installDubbingModels`、`createDubbingJob`、`getDubbingJob`、`updateDubbingJob`、`startDubbingJob`、`cancelDubbingJob` 和 `onDubbingProgress`。模型与任务文件位于应用用户数据目录，不写入工程文件。
 
 媒体协议验证目录包含关系和授权；浏览器 API 限制本机来源、会话令牌和允许根目录。本地服务不用于公网部署。没有云端推理或媒体上传流程；依赖准备和首次构建需要网络下载。
 
-## 7. 打包与平台模块
+## 8. 打包与平台模块
 
 开发模式依次定位显式环境变量、平台媒体目录、旧资源目录、PATH 和 Mac 常见路径；打包版只读取 `resources/media-bin`，不回退系统安装。导出字体独立放入 `resources/fonts`，媒体可执行文件不放进 ASAR。
 

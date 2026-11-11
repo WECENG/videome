@@ -1,6 +1,6 @@
 # 开发、构建与内部交付
 
-适用版本：`0.1.0 Preview`。核对日期：2026-11-05。本轮目标为 macOS 15.0+ arm64 与 Windows x64。本机已验证 macOS 26 开发和安装包；macOS 15 和 Windows Server 2022 云端测试、构建与包内检查已通过，Windows 11/10 及 macOS 15 实机人工操作仍待验收。
+适用版本：`1.0.0`。核对日期：2026-11-11。本轮目标为 macOS 15.0+ arm64 与 Windows x64。本机已验证 macOS 26 开发和安装包；macOS 15 和 Windows Server 2022 云端测试、构建与包内检查已通过，Windows 11/10 及 macOS 15 实机人工操作仍待验收。
 
 ## 1. 环境与启动
 
@@ -22,7 +22,7 @@ npm run desktop:dev
 | `npm run dev` / `npm start` | 独立的浏览器开发服务，监听 `127.0.0.1:4179` |
 | `npm run build` | Vite 生产资源到 `dist/`，不生成安装包 |
 
-浏览器只提供 UI、本地媒体 API 和部分普通导出回退，没有桌面文件工程操作和批量队列。浏览器、开发桌面和安装版可能使用不同用户数据/存储来源；不要把开发预览服务暴露到公网。
+浏览器只提供 UI、本地媒体 API 和部分普通导出回退，没有桌面文件工程操作、批量队列或桌面端本地 DSP 分析。浏览器模式使用基础时长和手动标签完成配乐推荐；音乐/视频的 FFmpeg 特征分析只在 Electron 桌面版执行。浏览器、开发桌面和安装版可能使用不同用户数据/存储来源；不要把开发预览服务暴露到公网。
 
 ## 2. 媒体依赖与字体
 
@@ -31,6 +31,8 @@ npm run desktop:dev
 - Windows：下载 `resources/media-sources.json` 中固定的 FFmpeg 9.0.2 静态包，验证 SHA-256，提取 `ffmpeg.exe`、`ffprobe.exe` 和许可文件。
 - Mac：按 `resources/macos-media-lock.json` 下载锁定的 macOS 15 arm64 Homebrew bottles，收集工具与动态库、改写内部引用、执行 ad-hoc 签名；不要求安装到本机 Homebrew。
 - 字体：固定 Noto Sans CJK SC，准备至 `resources/fonts/`，核对字体及许可摘要。
+
+智能配乐使用同一套随包 `ffmpeg` / `ffprobe`。桌面版不需要额外安装 Python 或大型模型：导入普通音频后由 `electron/music-analysis.cjs` 解码 PCM 并执行轻量 JavaScript DSP；视频分析使用 FFmpeg 的音频、`signalstats` 和场景切换信息。分析缓存写入应用用户数据目录的 `music-analysis/` 子目录，不写入工程媒体目录，也不上传源文件。
 
 `media:check` 检查编码器、滤镜和可执行能力。Mac 额外检查所有媒体二进制架构、最低版本不高于 15.0 及无外部 Homebrew 引用；Windows 检查 PE x64。缺依赖或检查失败应修复资源，不能跳过媒体测试。
 
@@ -109,9 +111,9 @@ npm run verify:package
 | 产物（版本由 package.json 决定） | 路径示例 |
 | --- | --- |
 | Mac App | `release/mac-arm64/Videome.app` |
-| Mac 安装镜像 / App ZIP | `release/Videome-0.1.0-mac-arm64.dmg`、同名前缀 `.zip` |
+| Mac 安装镜像 / App ZIP | `release/Videome-1.0.0-mac-arm64.dmg`、同名前缀 `.zip` |
 | Windows 解包目录 | `release/win-unpacked/` |
-| Windows 安装 / 免安装 | `release/Videome-0.1.0-win-x64-setup.exe`、`…-portable.exe` |
+| Windows 安装 / 免安装 | `release/Videome-1.0.0-win-x64-setup.exe`、`…-portable.exe` |
 | 包检查记录 | `release/build-info.json`、`release/SHA256SUMS.txt` |
 
 `verify:package` 默认检查当前平台的解包资源，也接受资源目录参数：
@@ -162,6 +164,7 @@ NSIS 按机器安装，需要管理员权限，可选择目录并注册 `.videom
 | 工程和源媒体 | 用户选择的位置；工程只引用媒体路径 |
 | 会话和素材库恢复 | 当前 Electron/浏览器来源的本地存储 |
 | 批量权威清单与缓存 | `userData/batch-mix/` |
+| 音乐/视频分析缓存 | `userData/music-analysis/`；按媒体路径、大小、修改时间和分析引擎版本缓存 |
 | 代表工程切换前快照 | `userData/batch-project-recovery/` |
 | 批量成片、JSON/CSV、代表工程 | 用户输出目录下的独立批次子目录 |
 | 缩略图、视频帧及预览代理 | 系统缓存目录中的 Videome 缓存 |
@@ -189,6 +192,10 @@ node scripts/batch-acceptance.cjs "/absolute/source.mp4" "/absolute/output-direc
 | 批量中断或素材移动 | 从历史“校验并继续”或“重新定位源视频”，只接受内容相同的文件 |
 | 5173 已占用 | 停止已有开发服务再启动；启动器使用严格端口 |
 | 下载出现证书/镜像错误 | 检查本机代理和旧镜像配置，使用有效来源，不关闭 TLS 校验 |
+
+| 智能配乐显示基础模式 | 确认当前运行的是 Electron 桌面版且随包 `ffmpeg` / `ffprobe` 可执行；浏览器预览只支持基础推荐和手动标签 |
+| 音乐显示“识别失败” | 保留曲目并在右侧手动修正 BPM、能量、氛围或节奏；修正写入 `musicOverrides`，不会删除源文件 |
+| 重新分析没有立即换曲 | 该操作会重新请求当前视频上下文并重新计算分数；已有音乐特征复用缓存，分析完成后推荐自动更新。导出或智能配音占用媒体资源时会等待 |
 
 智能配音面板的“安装网络与代理”提供沿用启动环境、直接连接和自定义 HTTP/HTTPS 代理。常见本地代理填写 `http://127.0.0.1:7890`（以代理软件实际 HTTP/Mixed 端口为准）；用户名与密码按需填写。纯 SOCKS 端口暂不支持。保存后同时用于 GitHub/Hugging Face 模型及 PyPI 依赖下载，可用“保存并测试连接”分别检查三个来源站点。站点测试只检查连通性，大文件下载仍可能受上游 CDN 和网络状态影响。
 
