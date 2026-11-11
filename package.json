@@ -1,6 +1,6 @@
 {
   "name": "videome",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A local-first, AI-assisted video production tool",
   "main": "electron/main.cjs",
   "type": "module",

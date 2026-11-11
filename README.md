@@ -2,7 +2,7 @@
 
 Videome 是一款本地视频剪辑与批量混剪桌面工具，使用 React、Vite、Electron 和 FFmpeg/ffprobe。源素材、工程和渲染任务在本机处理。
 
-> 当前版本：`0.1.0 Preview` · 文档核对日期：2026-11-05
+> 当前版本：`1.0.0` · 文档核对日期：2026-11-05
 
 ## 当前状态
 
@@ -81,7 +81,7 @@ Windows 原生构建将 `dist:mac` 换为 `dist:win`。打包前先完成 `media
 | `npm run acceptance:fixtures` | 生成供人工验收使用的 90 秒测试素材 |
 | `npm run diagnostics` | 收集本机环境及批次诊断到 `output/diagnostics.json` |
 
-GitHub Actions 提供手动触发的 **Desktop internal test packages** 工作流，分别在 Mac 和 Windows runner 构建。两端构建和包内检查全部成功后，工作流会自动创建一个 GitHub 预发布版本，标签格式为 `v<版本>-build.<运行号>`（例如 `v0.1.0-build.7`），并附上 `.dmg`、`.zip`、Windows `.exe` 和 `SHA256SUMS.txt`。同一次运行重试时会更新同名 Release；构建过程仍会保留 Artifacts 作为诊断备份。工作流已提供不代表远程构建或人工验收已经通过。
+GitHub Actions 提供手动触发的 **Desktop internal test packages** 工作流，分别在 Mac 和 Windows runner 构建。两端构建和包内检查全部成功后，工作流会自动创建一个 GitHub 预发布版本，标签格式为 `v<版本>-build.<运行号>`（例如 `v1.0.0-build.7`），并附上 `.dmg`、`.zip`、Windows `.exe` 和 `SHA256SUMS.txt`。同一次运行重试时会更新同名 Release；构建过程仍会保留 Artifacts 作为诊断备份。工作流已提供不代表远程构建或人工验收已经通过。
 
 ## 项目结构
 
