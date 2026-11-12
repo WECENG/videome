@@ -104,6 +104,7 @@ import {
 } from './domain.js'
 import './styles.css'
 import BatchMixPanel from './BatchMixPanel.jsx'
+import BatchSegmentPanel from './BatchSegmentPanel.jsx'
 import DubbingPanel from './DubbingPanel.jsx'
 import SubtitleEditor from './SubtitleEditor.jsx'
 import { applyDubbingResult, applyDubbingResults, repairDubbingPlaybackState } from './dubbing-domain.js'
@@ -213,6 +214,7 @@ function App() {
   })
   const [showExport, setShowExport] = useState(false)
   const [showBatchMix, setShowBatchMix] = useState(false)
+  const [showBatchSegment, setShowBatchSegment] = useState(false)
   const [showDubbing, setShowDubbing] = useState(false)
   const [dubbingSettingsRequested, setDubbingSettingsRequested] = useState(false)
   const [musicFiles, setMusicFiles] = useState([])
@@ -2990,7 +2992,7 @@ function App() {
         <div className="topbar-brand"><div className="brand-mark"><Clapperboard size={16} strokeWidth={2.1} /><i /></div><span>videome<span className="brand-atelier"> atelier</span></span></div>
         <div className="breadcrumb"><div className="project-menu-anchor" ref={projectMenuRef}><button className="crumb-root" aria-label="项目菜单" aria-expanded={showProjectMenu} aria-haspopup="menu" onClick={() => setShowProjectMenu((current) => !current)}><FolderOpen size={13} />项目<ChevronDown size={11} /></button>{renderNewProjectMenu()}</div><label className="project-title-input"><input ref={projectNameInputRef} value={project.name} aria-label="项目名称" onChange={(event) => { const name = event.target.value; projectRef.current = { ...projectRef.current, name }; updateProject({ name }) }} onBlur={(event) => updateProjectName(event.target.value)} /></label><button className="project-location-trigger" aria-label="工程位置" title={projectPath || '尚未保存为工程文件，点击选择保存位置'} onClick={() => setShowProjectLocation(true)}><span className={projectPath ? 'location-dot saved' : 'location-dot'} />{saving ? '保存中…' : projectPath ? '工程位置' : '尚未保存'}</button>{exampleMode && <span className="example-badge">界面示例 · 无源文件</span>}</div>
         <div className="topbar-actions"><button className="icon-button undo-button" aria-label="撤销" title="撤销 · ⌘Z" disabled={!editHistory.length} onClick={handleUndo}><Undo2 size={16} /></button><button className="icon-button undo-button" aria-label="重做" title="重做 · ⌘⇧Z" disabled={!editFuture.length} onClick={handleRedo}><Redo2 size={16} /></button><span className="topbar-divider" /><button className="topbar-save" onClick={() => void saveProject()}><span>保存</span><kbd>⌘ S</kbd></button><button className="export-button" onClick={() => setShowExport(true)}><Download size={14} /><span>导出成片</span><ChevronDown size={13} /></button></div>
-        <button className="batch-launch" onClick={() => setShowBatchMix(true)}><Scissors size={14} />批量混剪</button>
+        <button className="batch-launch" onClick={() => setShowBatchMix(true)}><Scissors size={14} />批量混剪</button><button className="batch-launch" onClick={() => setShowBatchSegment(true)}><Film size={14} />批量分段</button>
       </header>
     )
   }
@@ -3520,6 +3522,7 @@ function App() {
       {renderTimelineMenu()}
       {renderDeleteTrackDialog()}
       {showBatchMix && <BatchMixPanel assets={assets} frameSize={project.frameSize} currentProject={() => normalizeProjectForPersistence(projectRef.current)} onOpenProject={loadOpenedProject} onClose={() => setShowBatchMix(false)} />}
+      {showBatchSegment && <BatchSegmentPanel assets={assets} onClose={() => setShowBatchSegment(false)} />}
       {showDubbing && <DubbingPanel initialSettingsOpen={dubbingSettingsRequested} currentProject={() => projectRef.current} selectedClipId={selectedId} selectedClipIds={selectedClipIds} onApply={(job, options) => { void applyDubbingJob(job, options) }} onClose={() => { setShowDubbing(false); setDubbingSettingsRequested(false) }} />}
       {renderRelinkDialog()}
       {renderProgress()}

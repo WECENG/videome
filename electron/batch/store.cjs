@@ -35,7 +35,7 @@ class JobStore {
       if (snapshot.outputDirectory && snapshot.items?.length) {
         await atomicJson(path.join(snapshot.outputDirectory, 'batch-manifest.json'), snapshot)
         const quote = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`
-        const rows = [['index', 'status', 'duration', 'output', 'signature', 'encoder', 'error'], ...snapshot.items.map((item) => [item.index, item.status, item.verification?.duration, item.outputPath, item.signature, item.encoder, item.error])]
+        const rows = [['index', 'sourceStart', 'sourceEnd', 'duration', 'status', 'output', 'signature', 'encoder', 'error'], ...snapshot.items.map((item) => [item.index, item.sourceStart, item.sourceEnd, item.verification?.duration ?? item.duration, item.status, item.outputPath, item.signature, item.encoder, item.error])]
         const target = path.join(snapshot.outputDirectory, 'batch-manifest.csv')
         const temporary = `${target}.${crypto.randomUUID()}.tmp`
         try { await fs.writeFile(temporary, '\uFEFF' + rows.map((row) => row.map(quote).join(',')).join('\n')); await replaceFile(temporary, target) }

@@ -5,7 +5,7 @@
 ## 1. 运行结构
 
 ```text
-React 编辑器 main.jsx / 批量面板 BatchMixPanel.jsx
+React 编辑器 main.jsx / 批量面板 BatchMixPanel.jsx、BatchSegmentPanel.jsx
         │ window.videome：contextBridge / IPC
         ▼
 preload.cjs → main.cjs
@@ -113,6 +113,8 @@ preload.cjs → main.cjs
 
 `BatchMixManager` 在 Electron 主进程持有，分析任务串行，执行批次一次一个。`ResourceGate` 统一锁定批量分析/执行与普通导出；`BackgroundLane` 将代理和缩略图串行并在批量占用时延后。
 
+`BatchSegmentManager` 使用独立的 `batch-segment` 持久化目录和 IPC 命名空间，复用同一 `ResourceGate`、FFmpeg 子进程包装器、任务清单和进度广播；其规划只生成固定时间边界的顺序分段，不参与混剪随机序列或背景音乐处理。
+
 自动并发为 1 或 2，前两条输出先单路执行；手动最大 1–8。单条编码、验证和发布都占任务槽。通过 `notify()` 限制每个批次的进度事件至每秒最多 4 次。界面关闭或刷新不销毁 manager。
 
 媒体由 `process.cjs` 守护进程启动。取消通过 IPC 通知停止；Mac 使用信号，Windows 按本应用创建的 PID 调用 `taskkill.exe /T`，超时强制结束。主进程断开 IPC 时守护进程尝试清理 FFmpeg；意外退出的恢复以清单和磁盘状态为准。
@@ -127,7 +129,7 @@ preload.cjs → main.cjs
 
 Windows 不执行 POSIX 目录 fsync；文件仍刷新并保留备份，不宣称所有文件系统都具备相同的断电保证。本轮输出面向本地 APFS/NTFS。
 
-代表工程由保存的序列引用原视频源区间重建，画面连续、原声联动，使用独立 `.videome` 路径。载入前将当前工程另存至 `userData/batch-project-recovery/`。
+代表工程由保存的序列引用原视频源区间重建，画面连续、原声联动，使用独立 `.videome` 路径。载入前将当前工程另存至 `userData/batch-project-recovery/`。批量分段只发布独立 MP4，不生成代表工程。
 
 ## 7. 接口与安全边界
 
@@ -139,6 +141,7 @@ Windows 不执行 POSIX 目录 fsync；文件仍刷新并保留备份，不宣�
 - 媒体：`pickMedia`、`probeMedia`、`requestMedia`、`createPreviewProxy`、`exportFrame`、`exportMedia`、`cancelExport`。
 - 音乐分析：`musicAnalysisStatus`、`analyzeMusicAssets`、`analyzeMusicVideo`、`cancelMusicAnalysis` 和 `onMusicAnalysisProgress`；分析缓存位于 `userData/music-analysis/`，不写入源音频。
 - 批量：`createBatchMixAnalysis` 返回 `jobId`；配合 get/list、start/pause/resume/cancel/retry、create-project、remove/cache 和 `onBatchMixProgress`。方法名以 `preload.cjs` 为准。
+- 分段：`createBatchSegmentJob` 返回 `jobId`；配合 get/list、start/pause/cancel、remove、open-directory 和 `onBatchSegmentProgress`。方法名以 `preload.cjs` 为准。
 - 配音：`dubbingModels`、`installDubbingModels`、`createDubbingJob`、`getDubbingJob`、`updateDubbingJob`、`startDubbingJob`、`cancelDubbingJob` 和 `onDubbingProgress`。模型与任务文件位于应用用户数据目录，不写入工程文件。
 
 媒体协议验证目录包含关系和授权；浏览器 API 限制本机来源、会话令牌和允许根目录。本地服务不用于公网部署。没有云端推理或媒体上传流程；依赖准备和首次构建需要网络下载。

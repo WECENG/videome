@@ -45,6 +45,8 @@
 /* Batch Mix Studio wizard */
 .batch-wizard { width:min(1180px,calc(100vw - 40px)); padding:28px; }
 .batch-wizard .batch-header { margin-bottom:16px; }
+.batch-segment-note { margin: 6px 0 14px; padding: 10px; border: 1px dashed #d4ddd2; border-radius: 8px; color: #8c988c; font-size: 10px; line-height: 1.6; }
+.batch-segment-results { margin-top: 18px; border-top: 1px solid #e0e6dc; padding-top: 14px; }
 .batch-steps { display:flex; align-items:stretch; gap:4px; margin:0 0 20px; padding:3px; border:1px solid #dfe5da; border-radius:7px; background:#f3f4ed; }
 .batch-steps button { flex:1; min-height:30px; border:0; border-radius:5px; background:transparent; color:#89948a; padding:6px 9px; font-size:10px; text-align:center; white-space:nowrap; }
 .batch-steps button:hover:not(:disabled) { background:#e9eee7; color:#587160; }

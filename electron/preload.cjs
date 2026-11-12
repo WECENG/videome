@@ -93,6 +93,20 @@ contextBridge.exposeInMainWorld('videome', {
     ipcRenderer.on('videome:batch-progress', handler)
     return () => ipcRenderer.removeListener('videome:batch-progress', handler)
   },
+  pickBatchSegmentOutputDirectory: () => ipcRenderer.invoke('videome:segment-pick-directory'),
+  createBatchSegmentJob: (payload) => ipcRenderer.invoke('videome:segment-create', payload),
+  getBatchSegmentJob: (id) => ipcRenderer.invoke('videome:segment-get', id),
+  listBatchSegmentJobs: () => ipcRenderer.invoke('videome:segment-list'),
+  startBatchSegmentJob: (id) => ipcRenderer.invoke('videome:segment-start', id),
+  pauseBatchSegmentJob: (id) => ipcRenderer.invoke('videome:segment-pause', id),
+  cancelBatchSegmentJob: (id) => ipcRenderer.invoke('videome:segment-cancel', id),
+  removeBatchSegmentJob: (id) => ipcRenderer.invoke('videome:segment-remove', id),
+  openBatchSegmentDirectory: (id) => ipcRenderer.invoke('videome:segment-open-directory', id),
+  onBatchSegmentProgress(callback) {
+    const handler = (_event, job) => callback(job)
+    ipcRenderer.on('videome:segment-progress', handler)
+    return () => ipcRenderer.removeListener('videome:segment-progress', handler)
+  },
   onExportProgress(callback) {
     const handler = (_event, progress) => callback(progress)
     ipcRenderer.on('videome:export-progress', handler)

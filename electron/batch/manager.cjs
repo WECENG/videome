@@ -18,7 +18,7 @@ class BackgroundLane {
   constructor(gate) { this.gate = gate; this.tail = Promise.resolve(); this.stopping = false }
   run(operation) {
     const next = this.tail.catch(() => {}).then(async () => {
-      while ((this.gate.owner?.startsWith('batch:') || this.gate.owner === 'dubbing') && !this.stopping) await new Promise((resolve) => setTimeout(resolve, 250))
+      while ((this.gate.owner?.startsWith('batch:') || this.gate.owner?.startsWith('segment:') || this.gate.owner === 'dubbing') && !this.stopping) await new Promise((resolve) => setTimeout(resolve, 250))
       if (this.stopping) throw new Error('应用正在退出。')
       return operation()
     })
@@ -195,6 +195,7 @@ class BatchMixManager extends EventEmitter {
     } finally {
       this.gate.release(owner)
       this.pump()
+      this.hooks.onGateReleased?.()
     }
   }
 
@@ -232,6 +233,7 @@ class BatchMixManager extends EventEmitter {
       this.activeJob = null
       this.controllers.delete(job.id)
       this.pump()
+      this.hooks.onGateReleased?.()
     })
   }
 

@@ -11,6 +11,8 @@ const { managePreviewWindow } = require('./preview-window.cjs')
 const { createProjectWriteQueue, normalizeProjectForPersistence, normalizeProjectName, projectBackupSourcePath, projectFileName, withProjectExtension, writeProjectBackup, writeProjectSnapshot } = require('./project.cjs')
 const { BatchMixManager, ResourceGate, BackgroundLane } = require('./batch/manager.cjs')
 const { registerBatchMixIpc } = require('./batch/ipc.cjs')
+const { BatchSegmentManager } = require('./segment/manager.cjs')
+const { registerBatchSegmentIpc } = require('./segment/ipc.cjs')
 const { locateTool, fontResources, encoderFor, hardwareFailure, filterPath } = require('./runtime.cjs')
 const { stopChild } = require('./processes.cjs')
 const { DubbingModels } = require('./dubbing/models.cjs')
@@ -44,7 +46,7 @@ const musicAnalysisService = app.whenReady().then(async () => {
 registerMusicAnalysisIpc({ ipcMain, service: musicAnalysisService, authorize: authorizeExistingMedia })
 const batchManager = app.whenReady().then(async () => {
   const [ffmpeg, ffprobe] = await Promise.all([locateBinary('ffmpeg'), locateBinary('ffprobe')])
-  const service = new BatchMixManager({ root: path.join(app.getPath('userData'), 'batch-mix'), ffmpeg, ffprobe, gate: exportGate })
+  const service = new BatchMixManager({ root: path.join(app.getPath('userData'), 'batch-mix'), ffmpeg, ffprobe, gate: exportGate, hooks: { onGateReleased: () => { void batchSegmentManager.then((segmentService) => segmentService.pump()) } } })
   await service.initialized
   service.on('progress', (job) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -54,6 +56,16 @@ const batchManager = app.whenReady().then(async () => {
   return service
 })
 registerBatchMixIpc({ ipcMain, app, dialog, shell, manager: batchManager, authorize: authorizeExistingMedia, openProjectPath })
+const batchSegmentManager = app.whenReady().then(async () => {
+  const [ffmpeg, ffprobe] = await Promise.all([locateBinary('ffmpeg'), locateBinary('ffprobe')])
+  const service = new BatchSegmentManager({ root: path.join(app.getPath('userData'), 'batch-segment'), ffmpeg, ffprobe, gate: exportGate, hooks: { onGateReleased: () => { void batchManager.then((mixService) => mixService.pump()) } } })
+  await service.initialized
+  service.on('progress', (job) => {
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:segment-progress', job)
+  })
+  return service
+})
+registerBatchSegmentIpc({ ipcMain, app, dialog, shell, manager: batchSegmentManager, authorize: authorizeExistingMedia })
 const dubbingResources = app.isPackaged ? path.join(process.resourcesPath, 'dubbing') : path.join(__dirname, '..', 'resources', 'dubbing')
 const broadcastDubbing = (payload) => {
   for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:dubbing-progress', payload)
@@ -67,7 +79,7 @@ const dubbingModels = app.whenReady().then(() => {
 const whisperManager = app.whenReady().then(async () => {
   const [models, ffmpeg] = await Promise.all([dubbingModels, locateBinary('ffmpeg')])
   const whisper = new WhisperManager({ root: models.root, resources: dubbingResources, models, ffmpeg, gate: exportGate,
-    onGateReleased: () => { void batchManager.then((service) => service.pump()) },
+    onGateReleased: () => { void batchManager.then((service) => service.pump()); void batchSegmentManager.then((segmentService) => segmentService.pump()) },
   })
   whisper.on('progress', (state) => {
     for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('videome:whisper-progress', state)
@@ -967,7 +979,7 @@ ipcMain.handle('videome:export', async (event, { settings, project }) => {
   })
   } finally {
     exportGate.release('ordinary')
-    void batchManager.then((service) => service.pump())
+    void batchManager.then((service) => service.pump()); void batchSegmentManager.then((service) => service.pump())
   }
 })
 
@@ -1027,7 +1039,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   backgroundLane.stopping = true
   for (const job of activeJobs) { job.videomeCancelled = true; stopChild(job) }
-  void Promise.all([batchManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown()), whisperManager.then((service) => service.shutdown()), musicAnalysisService.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
+  void Promise.all([batchManager.then((service) => service.shutdown()), batchSegmentManager.then((service) => service.shutdown()), dubbingManager.then((service) => service.shutdown()), whisperManager.then((service) => service.shutdown()), musicAnalysisService.then((service) => service.shutdown())]).finally(() => { finishedShutdown = true; app.quit() })
 })
 
 app.on('window-all-closed', () => {
