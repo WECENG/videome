@@ -62,7 +62,7 @@ class BatchSegmentManager extends EventEmitter {
     const id = crypto.randomUUID()
     const outputDirectory = path.join(base, `Videome-分段-${new Date().toISOString().replace(/[:.]/g, '-')}-${id.slice(0, 8)}`)
     await fs.mkdir(outputDirectory, { recursive: false })
-    const job = { schemaVersion: 1, type: 'segment', algorithmVersion: planning.ALGORITHM_VERSION, id, status: 'analyzing', phase: 'fingerprint', createdAt: new Date().toISOString(), sourcePath, outputDirectory, options, items: [], warnings: [], error: null, concurrency: 1 }
+    const job = { schemaVersion: 1, type: 'segment', algorithmVersion: planning.ALGORITHM_VERSION, id, status: 'analyzing', phase: 'fingerprint', createdAt: new Date().toISOString(), sourcePath, outputDirectory, options, items: [], warnings: [], error: null, concurrency: options.concurrency }
     this.jobs.set(id, job); this.controllers.set(id, new AbortController()); await this.save(job)
     const analysis = this.analysisTail.catch(() => {}).then(() => this.analyze(job)).finally(() => this.controllers.delete(id))
     this.analysisTail = analysis; this.analysisTasks ||= new Set(); this.analysisTasks.add(analysis); void analysis.finally(() => this.analysisTasks.delete(analysis))
@@ -104,11 +104,20 @@ class BatchSegmentManager extends EventEmitter {
     this.controllers.set(job.id, new AbortController()); const context = this.context(job); job.status = 'running'; job.error = null
     const digest = await this.engine.fingerprint(job.source.path, context.signal); if (digest.sha256 !== job.source.sha256) throw new Error('源文件内容已变化，请重新分析。')
     job.source.size = digest.size; job.source.mtimeMs = digest.mtimeMs; await this.save(job)
+    const workers = new Set()
+    const concurrency = Number(job.options.concurrency || job.concurrency || 1)
     while (!this.stopping) {
       const pending = job.items.find((item) => item.status === 'queued')
-      if (job.status === 'running' && pending) { pending.status = 'rendering'; await this.processItem(job, pending, context); continue }
-      break
+      if (job.status === 'running' && pending && workers.size < concurrency) {
+        pending.status = 'rendering'
+        const worker = this.processItem(job, pending, context).finally(() => workers.delete(worker))
+        workers.add(worker)
+        continue
+      }
+      if (!workers.size) break
+      await Promise.race(workers)
     }
+    await Promise.all(workers)
     if (this.stopping) job.status = 'interrupted'
     else if (job.status === 'pausing') job.status = 'paused'
     else if (job.status === 'cancelling') job.status = 'cancelled'

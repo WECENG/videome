@@ -6,9 +6,11 @@ const roundTime = (value) => Math.round(value * 1e6) / 1e6
 function normalizeOptions(input = {}) {
   const segmentSeconds = Number(input.segmentSeconds ?? 20)
   const videoBitrateMbps = Number(input.videoBitrateMbps ?? 12)
+  const concurrency = Number(input.concurrency ?? 1)
   if (!Number.isFinite(segmentSeconds) || segmentSeconds < 0.1 || segmentSeconds > 3600) throw new Error('片段时长必须为 0.1–3600 秒。')
   if (!Number.isFinite(videoBitrateMbps) || videoBitrateMbps < 1 || videoBitrateMbps > 100) throw new Error('视频码率必须为 1–100 Mbps。')
-  return { segmentSeconds, videoBitrateMbps }
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('并发上限必须为 1–8。')
+  return { segmentSeconds, videoBitrateMbps, concurrency }
 }
 
 function planSegments(duration, fps, segmentSeconds) {
